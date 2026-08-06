@@ -132,3 +132,6 @@ dmypy.json
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Temp media download dir (DLLOC)
+/temp/
