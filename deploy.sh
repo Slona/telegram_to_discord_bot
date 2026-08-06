@@ -17,7 +17,7 @@ echo "== Обновляем зависимости =="
 echo "== Перезапускаем сервис =="
 sudo systemctl restart "${SERVICE}.service"
 sleep 2
-sudo systemctl status "${SERVICE}.service" --no-pager
+systemctl status "${SERVICE}.service" --no-pager
 
 echo
 echo "== Последние строки лога =="
