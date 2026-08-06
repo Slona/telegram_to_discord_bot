@@ -102,7 +102,7 @@ async def send_media(paths, caption, username, fallback_link):
 
 async def relay(messages, chat):
     try:
-        caption = next((m.message for m in messages if m.message), "")
+        caption = next((m.text for m in messages if m.message), "")
         media_messages = [m for m in messages if is_relayable_media(m)]
 
         if not media_messages:
