@@ -1,0 +1,5 @@
+aiohttp==3.13.5
+nextcord==3.1.1
+python-dotenv==1.2.2
+requests==2.33.1
+Telethon==1.43.2
