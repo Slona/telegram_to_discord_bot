@@ -1,6 +1,8 @@
 # Telegram-To-Discord
 
-Пересылает сообщения из Telegram-канала(ов) в Discord через webhook, включая медиа (фото, видео).
+Пересылает сообщения из Telegram-канала(ов) в Discord через webhook: текст с сохранением ссылок и форматирования, фото/видео (включая альбомы), с фоллбеком на ссылку на пост при превышении лимита размера вложения.
+
+Основано на архивном проекте [UrekD/Telegram-To-Discord](https://github.com/UrekD/Telegram-To-Discord), переписано и доработано.
 
 ## Требования
 
@@ -21,3 +23,7 @@ APPID и APIHASH создаются здесь: https://core.telegram.org/api/ob
 ## Деплой
 
 В проде бот запускается через systemd-юнит `telegram_to_discord_bot.service`.
+
+## Лицензия
+
+[MIT](LICENSE)
