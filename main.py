@@ -138,12 +138,18 @@ async def main():
         client = TelegramClient(apiname, appid, apihash, catch_up=True)
         await client.connect()
         if not await client.is_user_authorized():
-            logger.error(
-                "Telegram session is not authorized. "
-                "Sign in interactively once to recreate %s.session", apiname
-            )
-            await client.disconnect()
-            sys.exit(1)
+            if sys.stdin.isatty():
+                # First run (or an expired session) in an interactive terminal:
+                # let Telethon prompt for phone/code as usual.
+                await client.start()
+            else:
+                logger.error(
+                    "Telegram session is not authorized and there is no interactive "
+                    "terminal to sign in from. Run `python3 main.py` by hand once to "
+                    "recreate %s.session, then restart the service.", apiname
+                )
+                await client.disconnect()
+                sys.exit(1)
 
         logger.info("Started")
         logger.info("Input channels: %s", input_channels_entities)

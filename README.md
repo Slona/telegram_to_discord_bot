@@ -14,9 +14,13 @@
 
 ```bash
 pip install -r requirements.txt
-# Скопировать .env.example в .env и заполнить своими значениями
+cp .env.example .env
+# Заполнить .env своими значениями
+mkdir -p temp  # или другой путь, указанный в DLLOC — папка должна существовать до старта
 python3 main.py
 ```
+
+При первом запуске (или если `.session`-файл протух) Telegram запросит номер телефона и код подтверждения — нужен интерактивный терминал. После успешного входа создаётся `.session`-файл, и дальнейшие запуски (в том числе под systemd) проходят без интерактива.
 
 APPID и APIHASH создаются здесь: https://core.telegram.org/api/obtaining_api_id
 
