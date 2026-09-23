@@ -3,6 +3,7 @@ import logging
 import os
 
 import telethon
+from telethon.extensions import html as tg_html
 
 from targets import Post
 
@@ -43,13 +44,17 @@ def remove_files(paths):
 async def relay(messages, chat, targets, dlloc):
     paths = []
     try:
-        text = next((m.text for m in messages if m.message), "")
+        text_message = next((m for m in messages if m.message), None)
+        text = text_message.text if text_message else ""
+        html = (tg_html.unparse(text_message.raw_text, text_message.entities or [])
+                if text_message else "")
+        plain = text_message.raw_text if text_message else ""
         media_messages = [m for m in messages if is_relayable_media(m)]
         paths = await download_media(media_messages, dlloc)
         if not text and not paths:
             return
 
-        post = Post(source=chat.title, text=text,
+        post = Post(source=chat.title, text=text, html=html, plain=plain,
                     link=telegram_link(chat, messages[0]), media=paths)
         results = await asyncio.gather(
             *(t.send(post) for t in targets), return_exceptions=True

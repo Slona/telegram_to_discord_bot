@@ -24,6 +24,15 @@ python3 main.py
 
 APPID и APIHASH создаются здесь: https://core.telegram.org/api/obtaining_api_id
 
+## Цели пересылки
+
+Пост из Telegram разбирается один раз и уходит во все настроенные цели (`targets/`). Цель включается, если в `.env` заданы её переменные; сбой одной цели не влияет на остальные.
+
+| Цель | Переменные | Заметки |
+|------|-----------|---------|
+| Discord | `WEBHOOK` | как раньше |
+| MAX (канал) | `MAX_TOKEN`, `MAX_CHAT_ID` | бот должен быть админом канала; `chat_id` можно узнать через `python3 tools/max_chat_id.py`; API MAX требует корневой сертификат Минцифры (системный или `MAX_CA_FILE`) |
+
 ## Деплой
 
 В проде бот запускается через systemd-юнит `telegram_to_discord_bot.service`.

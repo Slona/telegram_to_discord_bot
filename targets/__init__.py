@@ -11,6 +11,8 @@ class Post:
     """A Telegram post in a platform-neutral form."""
     source: str                # channel title
     text: str                  # Telegram text in Markdown (links/formatting kept)
+    html: str                  # same text as Telegram-flavoured HTML
+    plain: str                 # same text with no formatting at all
     link: str                  # URL of the original Telegram post
     media: list[str] = field(default_factory=list)  # local file paths
 
@@ -32,8 +34,9 @@ class Target:
 
 def load_targets():
     from .discord import DiscordTarget
+    from .max import MaxTarget
 
-    candidates = [DiscordTarget]
+    candidates = [DiscordTarget, MaxTarget]
     targets = []
     for cls in candidates:
         target = cls.from_env()
