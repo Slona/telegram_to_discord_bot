@@ -35,8 +35,9 @@ class Target:
 def load_targets():
     from .discord import DiscordTarget
     from .max import MaxTarget
+    from .vk import VkTarget
 
-    candidates = [DiscordTarget, MaxTarget]
+    candidates = [DiscordTarget, MaxTarget, VkTarget]
     targets = []
     for cls in candidates:
         target = cls.from_env()

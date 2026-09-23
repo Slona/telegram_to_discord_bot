@@ -19,6 +19,10 @@ def is_relayable_media(message):
 
 
 def telegram_link(chat, message):
+    # Public channels have a link anyone can open; private ones only work for members.
+    username = getattr(chat, "username", None)
+    if username:
+        return f"https://t.me/{username}/{message.id}"
     return f"https://t.me/c/{chat.id}/{message.id}"
 
 
