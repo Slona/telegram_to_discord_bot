@@ -2,12 +2,14 @@
 """Check what a VK community access key is actually allowed to do.
 
 Reads VK_TOKEN (community key) and VK_GROUP_ID (number, no minus) from the
-environment/.env. Nothing visible is published: the test post is created as a
+environment/.env. Optional VK_CA_FILE points at a PEM bundle to trust instead of
+the system store (e.g. the path printed by `python -c "import certifi; print(certifi.where())"`). Nothing visible is published: the test post is created as a
 postponed post a year ahead and deleted right away.
 """
 
 import asyncio
 import os
+import ssl
 import time
 
 import aiohttp
@@ -39,7 +41,9 @@ async def main():
     token = os.environ["VK_TOKEN"]
     group_id = int(os.environ["VK_GROUP_ID"])
 
-    async with aiohttp.ClientSession() as session:
+    ca_file = os.environ.get("VK_CA_FILE")
+    ctx = ssl.create_default_context(cafile=ca_file) if ca_file else None
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ctx)) as session:
         info = report("groups.getById", await call(session, token, "groups.getById",
                                                    group_id=group_id))
         if info:
