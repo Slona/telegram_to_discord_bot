@@ -135,3 +135,7 @@ dmypy.json
 
 # Temp media download dir (DLLOC)
 /temp/
+
+# Tumblr OAuth tokens (secret, rotate on refresh)
+tumblr_token.json
+tumblr_token.json.tmp

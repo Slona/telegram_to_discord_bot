@@ -33,6 +33,7 @@ APPID и APIHASH создаются здесь: https://core.telegram.org/api/ob
 | Discord | `WEBHOOK` | как раньше |
 | MAX (канал) | `MAX_TOKEN`, `MAX_CHAT_ID` | бот должен быть админом канала; `chat_id` можно узнать через `python3 tools/max_chat_id.py`; API MAX требует корневой сертификат Минцифры (системный или `MAX_CA_FILE`) |
 | ВК (стена сообщества) | `VK_TOKEN`, `VK_GROUP_ID` | ключ сообщества с правами: стена, фото, сообщения; текст и до 10 фото, видео и прочее заменяются ссылкой на пост; проверка возможностей ключа: `python3 tools/vk_check.py` |
+| Tumblr | `TUMBLR_CLIENT_ID`, `TUMBLR_CLIENT_SECRET`, `TUMBLR_BLOG` | OAuth2: один раз `python3 tools/tumblr_auth.py` создаёт `tumblr_token.json` (секрет, токены обновляются самим ботом — использовать файл только на одной машине); форматирование, до 30 картинок и 1 видео в посте, остальное — ссылкой на пост |
 
 ## Деплой
 

@@ -61,8 +61,18 @@ async def main():
         sys.exit(1)
 
     async with aiohttp.ClientSession() as session:
+        ready = []
         for target in targets:
-            await target.setup(session)
+            try:
+                await target.setup(session)
+            except Exception:
+                logger.exception("Target %s failed to start and is disabled", target.name)
+            else:
+                ready.append(target)
+        targets[:] = ready
+        if not targets:
+            logger.error("No relay target started")
+            sys.exit(1)
 
         client = TelegramClient(apiname, appid, apihash, catch_up=True)
         await client.connect()
