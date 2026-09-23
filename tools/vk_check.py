@@ -68,6 +68,30 @@ async def upload_doc(session, token, group_id):
     return f"doc{doc['owner_id']}_{doc['id']}"
 
 
+async def upload_message_photo(session, token):
+    """Upload TINY_PNG via the messages route; return 'photo<owner>_<id>[_key]' or None."""
+    server = report("photos.getMessagesUploadServer (photo upload)",
+                    await call(session, token, "photos.getMessagesUploadServer"))
+    if not server:
+        return None
+    form = aiohttp.FormData()
+    form.add_field("photo", TINY_PNG, filename="api_check.png", content_type="image/png")
+    async with session.post(server["upload_url"], data=form) as resp:
+        uploaded = await resp.json(content_type=None)
+    if not uploaded.get("photo"):
+        print(f"[FAIL] photo upload to VK server: {uploaded}")
+        return None
+    saved = report("photos.saveMessagesPhoto",
+                   await call(session, token, "photos.saveMessagesPhoto",
+                              photo=uploaded["photo"], server=uploaded["server"],
+                              hash=uploaded["hash"]))
+    if not saved:
+        return None
+    photo = saved[0]
+    key = f"_{photo['access_key']}" if photo.get("access_key") else ""
+    return f"photo{photo['owner_id']}_{photo['id']}{key}"
+
+
 async def main():
     token = os.environ["VK_TOKEN"]
     group_id = int(os.environ["VK_GROUP_ID"])
@@ -90,14 +114,16 @@ async def main():
             report(f"{method} (photo upload route)",
                    await call(session, token, method, **extra))
 
-        attachment = await upload_doc(session, token, group_id)
+        photo = await upload_message_photo(session, token)
+        doc = None if photo else await upload_doc(session, token, group_id)
+        attachment = photo or doc
 
         params = dict(owner_id=-group_id, from_group=1, message="api check, ignore",
                       publish_date=int(time.time()) + 365 * 24 * 3600)
         if attachment:
             params["attachments"] = attachment
-        label = "wall.post (postponed, with the doc attached)" if attachment \
-            else "wall.post (postponed, text only)"
+        kind = "photo" if photo else "doc"
+        label = f"wall.post (postponed, with the {kind} attached)" if attachment             else "wall.post (postponed, text only)"
         report(label, await call(session, token, "wall.post", **params))
 
         video = report("video.save (video upload)",
