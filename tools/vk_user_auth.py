@@ -1,87 +1,98 @@
 #!/usr/bin/env python3
-"""One-time sign-in that gets a VK *user* token for a community admin.
+"""One-time VK ID sign-in for a community admin.
 
-A community key can only post text; bots that post pictures to a community
-wall use an admin's user token. This asks VK for one through your own VK app
-(VK_APP_ID, the "ID приложения" in the app settings) via the Implicit Flow.
+The bot uploads photos and video to the community with this user token (the
+community key then publishes the post). VK ID hands out a 1-hour access token
+plus a refresh token that the bot swaps for a new pair by itself; every swap
+invalidates the previous pair, so the token file (VK_USER_TOKEN_FILE, default
+vk_user_token.json) is rewritten each time and must live on ONE machine only.
+It gives access to that personal account: treat it as a secret.
 
-1. Run the script, open the printed link in a browser signed in to an account
-   that is an ADMIN of the community, approve access.
-2. Paste the address the browser ends up on (oauth.vk.com/blank.html#...).
+1. In the VK app settings add a trusted redirect URL, e.g.
+   https://localhost/callback (nothing has to answer there); if you pick a
+   different one, put it in VK_REDIRECT_URI.
+2. Set VK_APP_ID (plus VK_SERVICE_TOKEN if VK says the app is confidential)
+   and run the script.
+3. Open the link signed in as a community ADMIN, approve, and paste the address
+   the browser ends up on (the page itself may fail to load, that's fine).
 
-If VK answers "invalid scope", run with --probe: it prints one link per right,
-so you can see which rights your app may request. Then pass the allowed ones:
-    python3 tools/vk_user_auth.py wall,photos,offline
-
-The token grants access to that personal account (wall, photos, video,
-groups), so the token file (VK_USER_TOKEN_FILE, default vk_user_token.json) is
-a secret: keep it on the server only and never share it.
+Rights can be passed as an argument: python3 tools/vk_user_auth.py "wall photos"
 """
 
-import json
+import base64
+import hashlib
 import os
+import secrets
 import sys
-import time
 from urllib.parse import parse_qs, urlencode, urlparse
 
+import requests
 from dotenv import load_dotenv
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from targets.vk import VK_ID_URL, UserTokenStore  # noqa: E402
 
 load_dotenv()
 
-SCOPE = "wall,photos,video,groups,offline"
-REDIRECT_URI = "https://oauth.vk.com/blank.html"
-
-
-def auth_url(app_id, scope):
-    return "https://oauth.vk.com/authorize?" + urlencode({
-        "client_id": app_id,
-        "display": "page",
-        "redirect_uri": REDIRECT_URI,
-        "scope": scope,
-        "response_type": "token",
-        "v": "5.199",
-    })
+SCOPE = "wall photos video groups"
 
 
 def main():
     app_id = os.environ["VK_APP_ID"]
+    redirect_uri = os.environ.get("VK_REDIRECT_URI", "https://localhost/callback")
     token_file = os.environ.get("VK_USER_TOKEN_FILE", "vk_user_token.json")
-    arg = sys.argv[1] if len(sys.argv) > 1 else SCOPE
+    vk_id_url = os.environ.get("VK_ID_URL", VK_ID_URL).rstrip("/")
+    scope = sys.argv[1].replace(",", " ") if len(sys.argv) > 1 else SCOPE
 
-    if arg == "--probe":
-        print("Open each link. 'invalid scope' right away = the app may not request")
-        print("that right; a sign-in/approval page = allowed (just close it, don't approve).\n")
-        for right in SCOPE.split(","):
-            print(f"{right}:\n{auth_url(app_id, right)}\n")
-        return
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    state = secrets.token_urlsafe(32)
 
-    url = auth_url(app_id, arg)
+    url = f"{vk_id_url}/authorize?" + urlencode({
+        "response_type": "code",
+        "client_id": app_id,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "scope": scope,
+    })
     print("Open this link as a community admin and approve access:\n\n" + url + "\n")
     answer = input("Paste the address you were redirected to: ").strip()
 
-    parsed = urlparse(answer)
-    fields = parse_qs(parsed.fragment or parsed.query)
-    if "access_token" not in fields:
-        error = fields.get("error", ["?"])[0]
-        description = fields.get("error_description", [""])[0]
-        sys.exit(f"No token in the address. VK said: {error} {description}")
+    query = parse_qs(urlparse(answer).query)
+    if "code" not in query:
+        sys.exit(f"No code in the address. VK said: {query.get('error', ['?'])[0]} "
+                 f"{query.get('error_description', [''])[0]}")
+    if query.get("state", [None])[0] != state:
+        sys.exit("State mismatch: this is not the redirect for this sign-in attempt.")
+    device_id = query["device_id"][0]
 
-    expires_in = int(fields.get("expires_in", ["0"])[0])
     data = {
-        "access_token": fields["access_token"][0],
-        "user_id": fields.get("user_id", [None])[0],
-        "expires_at": time.time() + expires_in if expires_in else 0,
+        "grant_type": "authorization_code",
+        "code_verifier": verifier,
+        "redirect_uri": redirect_uri,
+        "code": query["code"][0],
+        "client_id": app_id,
+        "device_id": device_id,
+        "state": state,
     }
-    tmp = f"{token_file}.tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh)
-    os.replace(tmp, token_file)
+    if os.environ.get("VK_SERVICE_TOKEN"):
+        data["service_token"] = os.environ["VK_SERVICE_TOKEN"]
+    resp = requests.post(f"{vk_id_url}/oauth2/auth", data=data, timeout=30)
     try:
-        os.chmod(token_file, 0o600)
-    except OSError:
-        pass
-    lifetime = "never expires" if not expires_in else f"expires in {expires_in // 3600} h"
-    print(f"Saved the user token to {token_file} ({lifetime})")
+        body = resp.json()
+    except ValueError:
+        sys.exit(f"Token exchange failed: HTTP {resp.status_code}")
+    if "access_token" not in body:
+        sys.exit(f"Token exchange failed: {body.get('error')} {body.get('error_description', '')}")
+
+    UserTokenStore(token_file).save(UserTokenStore.from_response(body, device_id))
+    print(f"Saved tokens to {token_file}; granted rights: {body.get('scope')}")
+    if not body.get("refresh_token"):
+        print("WARNING: no refresh token was issued, the bot will lose media uploads "
+              "once the access token expires.")
 
 
 if __name__ == "__main__":
