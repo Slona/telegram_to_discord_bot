@@ -139,13 +139,18 @@ async def main():
         # try passing our own uploaded photo as the snippet picture (link_photo_id).
         link = os.environ.get("VK_TEST_LINK", "https://t.me/plushstream/7668")
         photo = await upload_message_photo(session, token)
-        params = dict(owner_id=-group_id, from_group=1, message="api check link, ignore",
-                      attachments=link, link_title="api check snippet",
-                      publish_date=int(time.time()) + 365 * 24 * 3600)
+        variants = []
         if photo:
-            params["link_photo_id"] = photo.replace("photo", "", 1)
-        report("wall.post (postponed, link snippet with our own picture)",
-               await call(session, token, "wall.post", **params))
+            bare = photo.replace("photo", "", 1)          # <owner>_<id>[_<key>]
+            variants.append(("owner_id without access key", "_".join(bare.split("_")[:2])))
+            variants.append(("owner_id with access key", bare))
+        for label, photo_id in variants:
+            report(f"wall.post (postponed, link snippet, link_photo_id = {label})",
+                   await call(session, token, "wall.post", owner_id=-group_id,
+                              from_group=1, message=f"api check link ({label}), ignore",
+                              attachments=link, link_title="api check snippet",
+                              link_photo_id=photo_id,
+                              publish_date=int(time.time()) + 365 * 24 * 3600))
 
         video = report("video.save (video upload)",
                        await call(session, token, "video.save", group_id=group_id,
