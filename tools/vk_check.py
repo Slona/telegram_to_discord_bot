@@ -16,6 +16,7 @@ import json
 import os
 import ssl
 import struct
+import sys
 import time
 import zlib
 
@@ -119,13 +120,21 @@ USER_TOKEN_FILE = os.environ.get("VK_USER_TOKEN_FILE", "vk_user_token.json")
 async def user_token_checks(session, group_id, community_token):
     """Same job with an admin's USER token (tools/vk_user_auth.py), the way
     bots that post pictures to a community wall do it."""
-    try:
-        with open(USER_TOKEN_FILE, encoding="utf-8") as fh:
-            token = json.load(fh)["access_token"]
-    except (OSError, ValueError, KeyError):
+    if not os.path.exists(USER_TOKEN_FILE):
         print(f"\n(no {USER_TOKEN_FILE}: user-token checks skipped, see tools/vk_user_auth.py)")
         return
     print("\n--- with the admin's USER token ---")
+    # Same token handling as the bot, so an expired VK ID token gets refreshed.
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+    from targets.vk import UserTokenError, VkTarget
+    target = VkTarget.from_env()
+    await target.setup(session)
+    try:
+        token = await target.user_token()
+    except UserTokenError as e:
+        print(f"[FAIL] user token: {e}")
+        return
+    print("[ OK ] user token ready (refreshed if it had expired)")
     report("users.get (token works)", await call(session, token, "users.get"))
 
     attachment = None
