@@ -265,9 +265,12 @@ class TumblrTarget(Target):
         logger.info("Posting to Tumblr: %s image(s), %s video(s)", len(images), len(videos))
         try:
             await self.create_post(content, files)
-        except TumblrError as e:
-            if not files or not (e.codes & UPLOAD_ERROR_CODES):
+        except (TumblrError, aiohttp.ClientError) as e:
+            rejected = isinstance(e, TumblrError) and e.codes & UPLOAD_ERROR_CODES
+            dropped = isinstance(e, aiohttp.ClientError)  # connection cut mid-upload
+            if not files or not (rejected or dropped):
                 raise
-            # Tumblr refused the media (format, quota, transcoding...): keep the text.
-            logger.warning("Tumblr rejected the media (%s), posting text and a link", e.codes)
+            # Tumblr refused the media (format, quota, transcoding...) or hung up
+            # while it was being uploaded: keep the text.
+            logger.warning("Tumblr media upload failed (%s), posting text and a link", e)
             await self.create_post(assemble([], True), {})

@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import os
+import re
+import uuid
 
 import telethon
 from telethon.extensions import html as tg_html
@@ -26,6 +28,21 @@ def telegram_link(chat, message):
     return f"https://t.me/c/{chat.id}/{message.id}"
 
 
+def safe_name(path):
+    """Rename a downloaded file so its name is plain ASCII without spaces or
+    brackets: VK and Tumblr choke on names like 'photo (1).jpg' in uploads."""
+    directory, name = os.path.split(path)
+    stem, ext = os.path.splitext(name)
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("_") or "file"
+    new_path = os.path.join(directory, safe + ext.lower())
+    if new_path == path:
+        return path
+    if os.path.exists(new_path):
+        new_path = os.path.join(directory, f"{safe}_{uuid.uuid4().hex[:6]}{ext.lower()}")
+    os.rename(path, new_path)
+    return new_path
+
+
 async def download_media(messages, dlloc):
     paths = []
     for message in messages:
@@ -33,7 +50,7 @@ async def download_media(messages, dlloc):
         if path is None:  # Telethon has nothing downloadable for this media type
             logger.warning("Skipping media of message %s: nothing to download", message.id)
             continue
-        paths.append(path)
+        paths.append(safe_name(path))
     return paths
 
 
