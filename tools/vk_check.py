@@ -116,7 +116,7 @@ async def upload_message_photo(session, token):
 USER_TOKEN_FILE = os.environ.get("VK_USER_TOKEN_FILE", "vk_user_token.json")
 
 
-async def user_token_checks(session, group_id):
+async def user_token_checks(session, group_id, community_token):
     """Same job with an admin's USER token (tools/vk_user_auth.py), the way
     bots that post pictures to a community wall do it."""
     try:
@@ -148,6 +148,14 @@ async def user_token_checks(session, group_id):
                 attachment = f"photo{saved[0]['owner_id']}_{saved[0]['id']}"
 
     if attachment:
+        print(f"       uploaded photo belongs to owner {attachment.split('_')[0][5:]}")
+        # Hybrid: the user token uploads, the COMMUNITY key publishes (a user token
+        # of a non-standalone app may not call wall.post).
+        report("HYBRID wall.post by the community key with the user-uploaded photo",
+               await call(session, community_token, "wall.post", owner_id=-group_id,
+                          from_group=1, message="api check hybrid photo, ignore",
+                          attachments=attachment,
+                          publish_date=int(time.time()) + 365 * 24 * 3600))
         post = report("wall.post (postponed, as the community, with the photo)",
                       await call(session, token, "wall.post", owner_id=-group_id,
                                  from_group=1, message="api check user photo, ignore",
@@ -224,10 +232,10 @@ async def main():
             print("       video upload is allowed; delete the stub video "
                   f"manually: video_id={video.get('video_id')}")
 
-        await user_token_checks(session, group_id)
+        await user_token_checks(session, group_id, token)
 
     print("\nSend me only the [ OK ]/[FAIL] lines above, never the token.")
-    print("Then look at the postponed 'api check link' post: is there a card with a picture?")
+    print("Then look at the postponed 'api check hybrid photo' post: is the picture there?")
 
 
 if __name__ == "__main__":
