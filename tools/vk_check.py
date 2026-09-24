@@ -6,15 +6,17 @@ environment/.env. Optional VK_CA_FILE points at a PEM bundle to trust instead of
 the system store (e.g. `python -c "import certifi; print(certifi.where())"`).
 
 Nothing visible is published: the test post is a postponed post a year ahead.
-A community key can't delete posts (wall.delete), so up to TWO postponed posts
-("api check photo/doc, ignore") stay behind: remove them under "Отложенные записи".
+A community key can't delete posts (wall.delete), so ONE postponed post
+("api check doc, ignore") stays behind: remove them under "Отложенные записи".
 """
 
 import asyncio
 import base64
 import os
 import ssl
+import struct
 import time
+import zlib
 
 import aiohttp
 from dotenv import load_dotenv
@@ -24,10 +26,28 @@ load_dotenv()
 API = "https://api.vk.com/method/"
 VERSION = os.environ.get("VK_API_VERSION", "5.199")
 
-# 1x1 PNG used as the test upload.
+# 1x1 PNG, enough for upload-route probing.
 TINY_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
+
+
+def make_png(width=800, height=450):
+    """A colourful gradient PNG, big enough to tell how VK renders an image."""
+    def chunk(tag, data):
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+    rows = b"".join(
+        b"\x00" + b"".join(bytes((x * 255 // width, y * 255 // height, 160))
+                          for x in range(width))
+        for y in range(height)
+    )
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+TEST_IMAGE = make_png()
 
 
 async def call(session, token, method, **params):
@@ -54,7 +74,7 @@ async def upload_doc(session, token, group_id):
     if not server:
         return None
     form = aiohttp.FormData()
-    form.add_field("file", TINY_PNG, filename="api_check.png", content_type="image/png")
+    form.add_field("file", TEST_IMAGE, filename="api_check.png", content_type="image/png")
     async with session.post(server["upload_url"], data=form) as resp:
         uploaded = await resp.json(content_type=None)
     if "file" not in uploaded:
@@ -114,7 +134,9 @@ async def main():
             report(f"{method} (photo upload route)",
                    await call(session, token, method, **extra))
 
-        photo = await upload_message_photo(session, token)
+        # The messages-route photo is known to be dropped from wall posts, so
+        # only the document route is exercised end to end.
+        photo = None
         doc = await upload_doc(session, token, group_id)
 
         # Publish one postponed post per route, then READ IT BACK: wall.post
