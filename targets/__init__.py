@@ -41,7 +41,12 @@ def load_targets():
     candidates = [DiscordTarget, MaxTarget, VkTarget, TumblrTarget]
     targets = []
     for cls in candidates:
-        target = cls.from_env()
+        try:
+            target = cls.from_env()
+        except Exception:
+            # A misconfigured target must not take the others down with it.
+            logger.exception("Target %s has invalid settings and is disabled", cls.name)
+            continue
         if target is not None:
             targets.append(target)
     return targets
