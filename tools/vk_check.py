@@ -95,7 +95,7 @@ async def upload_message_photo(session, token):
     if not server:
         return None
     form = aiohttp.FormData()
-    form.add_field("photo", TINY_PNG, filename="api_check.png", content_type="image/png")
+    form.add_field("photo", TEST_IMAGE, filename="api_check.png", content_type="image/png")
     async with session.post(server["upload_url"], data=form) as resp:
         uploaded = await resp.json(content_type=None)
     if not uploaded.get("photo"):
@@ -134,17 +134,18 @@ async def main():
             report(f"{method} (photo upload route)",
                    await call(session, token, method, **extra))
 
-        # Photos (messages route) are dropped from wall posts and documents show
-        # only as a file name, so test a link snippet instead: VK builds a card
-        # (title + picture) from the page's metadata when the link is attached.
+        # VK refuses a link attachment without a picture ("No photo given") and a
+        # community key can't ask VK for one (wall.parseAttachedLink is closed), so
+        # try passing our own uploaded photo as the snippet picture (link_photo_id).
         link = os.environ.get("VK_TEST_LINK", "https://t.me/plushstream/7668")
-        report("wall.parseAttachedLink (snippet preview)",
-               await call(session, token, "wall.parseAttachedLink", url=link))
-        report("wall.post (postponed, link attached as a snippet)",
-               await call(session, token, "wall.post", owner_id=-group_id,
-                          from_group=1, message="api check link, ignore",
-                          attachments=link,
-                          publish_date=int(time.time()) + 365 * 24 * 3600))
+        photo = await upload_message_photo(session, token)
+        params = dict(owner_id=-group_id, from_group=1, message="api check link, ignore",
+                      attachments=link, link_title="api check snippet",
+                      publish_date=int(time.time()) + 365 * 24 * 3600)
+        if photo:
+            params["link_photo_id"] = photo.replace("photo", "", 1)
+        report("wall.post (postponed, link snippet with our own picture)",
+               await call(session, token, "wall.post", **params))
 
         video = report("video.save (video upload)",
                        await call(session, token, "video.save", group_id=group_id,
