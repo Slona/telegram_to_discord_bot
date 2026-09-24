@@ -7,7 +7,7 @@ the system store (e.g. `python -c "import certifi; print(certifi.where())"`).
 
 Nothing visible is published: the test post is a postponed post a year ahead.
 A community key can't delete posts (wall.delete), so ONE postponed post
-("api check doc, ignore") stays behind: remove them under "Отложенные записи".
+("api check link, ignore") stays behind: remove them under "Отложенные записи".
 """
 
 import asyncio
@@ -134,37 +134,17 @@ async def main():
             report(f"{method} (photo upload route)",
                    await call(session, token, method, **extra))
 
-        # The messages-route photo is known to be dropped from wall posts, so
-        # only the document route is exercised end to end.
-        photo = None
-        doc = await upload_doc(session, token, group_id)
-
-        # Publish one postponed post per route, then READ IT BACK: wall.post
-        # accepts attachments it later drops, so success alone proves nothing.
-        for kind, attachment in (("photo", photo), ("doc", doc)):
-            if not attachment:
-                continue
-            posted = report(f"wall.post (postponed, with the {kind} attached)",
-                            await call(session, token, "wall.post", owner_id=-group_id,
-                                       from_group=1, message=f"api check {kind}, ignore",
-                                       attachments=attachment,
-                                       publish_date=int(time.time()) + 365 * 24 * 3600))
-            if not posted:
-                continue
-            back = report(f"wall.getById ({kind} post read back)",
-                          await call(session, token, "wall.getById",
-                                     posts=f"-{group_id}_{posted['post_id']}"))
-            if back is None:
-                continue
-            items = back.get("items", back) if isinstance(back, dict) else back
-            if not items:
-                print(f"[WARN] {kind}: VK returned nothing for the postponed post, "
-                      "can't verify; look at it in 'Отложенные записи' by hand")
-                continue
-            kinds = [a.get("type") for a in (items[0].get("attachments") or [])]
-            print(f"[{' OK ' if kind in kinds else 'FAIL'}] the {kind} attachment is "
-                  f"{'really on the post' if kind in kinds else 'MISSING from the post'}"
-                  f" (attachments seen: {kinds})")
+        # Photos (messages route) are dropped from wall posts and documents show
+        # only as a file name, so test a link snippet instead: VK builds a card
+        # (title + picture) from the page's metadata when the link is attached.
+        link = os.environ.get("VK_TEST_LINK", "https://t.me/plushstream/7668")
+        report("wall.parseAttachedLink (snippet preview)",
+               await call(session, token, "wall.parseAttachedLink", url=link))
+        report("wall.post (postponed, link attached as a snippet)",
+               await call(session, token, "wall.post", owner_id=-group_id,
+                          from_group=1, message="api check link, ignore",
+                          attachments=link,
+                          publish_date=int(time.time()) + 365 * 24 * 3600))
 
         video = report("video.save (video upload)",
                        await call(session, token, "video.save", group_id=group_id,
@@ -174,7 +154,7 @@ async def main():
                   f"manually: video_id={video.get('video_id')}")
 
     print("\nSend me only the [ OK ]/[FAIL] lines above, never the token.")
-    print("Then delete the postponed 'api check ...' posts in the community.")
+    print("Then look at the postponed 'api check link' post: is there a card with a picture?")
 
 
 if __name__ == "__main__":
