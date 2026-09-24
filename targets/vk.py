@@ -50,6 +50,7 @@ PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".gif"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 PHOTO_MAX_BYTES = 50 * 1024 * 1024
 
+ERR_ACCESS_DENIED = 15
 ERR_TOO_MANY_REQUESTS = 6
 ERR_HYPERLINKS_FORBIDDEN = 222
 
@@ -161,6 +162,7 @@ class VkTarget(Target):
         self.session = None
         self.ssl_context = ssl.create_default_context(cafile=ca_file) if ca_file else None
         self._refresh_lock = asyncio.Lock()
+        self.denied_kinds = set()  # media kinds the user token lacks the right for
 
     @classmethod
     def from_env(cls):
@@ -300,7 +302,8 @@ class VkTarget(Target):
         attachments, skipped = [], 0
         for path in post.media:
             kind = classify(path)
-            if kind is None or self.user_tokens is None or len(attachments) >= ATTACHMENTS_PER_POST:
+            if (kind is None or kind in self.denied_kinds or self.user_tokens is None
+                    or len(attachments) >= ATTACHMENTS_PER_POST):
                 skipped += 1
                 continue
             try:
@@ -311,6 +314,16 @@ class VkTarget(Target):
             except UserTokenError as e:
                 logger.error("VK user token unusable (%s): media goes as a link until "
                              "tools/vk_user_auth.py is run again", e)
+                skipped += 1
+            except VkError as e:
+                if e.code != ERR_ACCESS_DENIED:
+                    logger.exception("VK upload of %s failed, skipping", path)
+                else:
+                    # The token lacks the right (e.g. VK ID didn't grant "photos"):
+                    # say it once and stop trying until the bot restarts.
+                    self.denied_kinds.add(kind)
+                    logger.warning("VK user token may not upload %ss (%s): they go as a "
+                                   "link to the original from now on", kind, e)
                 skipped += 1
             except Exception:
                 logger.exception("VK upload of %s failed, skipping", path)
