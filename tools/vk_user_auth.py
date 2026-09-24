@@ -9,7 +9,7 @@ vk_user_token.json) is rewritten each time and must live on ONE machine only.
 It gives access to that personal account: treat it as a secret.
 
 1. In the VK app settings add a trusted redirect URL, e.g.
-   https://localhost/callback (nothing has to answer there); if you pick a
+   https://localhost with base domain localhost (nothing has to answer there); if you pick a
    different one, put it in VK_REDIRECT_URI.
 2. Set VK_APP_ID (plus VK_SERVICE_TOKEN if VK says the app is confidential)
    and run the script.
@@ -39,7 +39,7 @@ SCOPE = "wall photos video groups"
 
 def main():
     app_id = os.environ["VK_APP_ID"]
-    redirect_uri = os.environ.get("VK_REDIRECT_URI", "https://localhost/callback")
+    redirect_uri = os.environ.get("VK_REDIRECT_URI", "https://localhost")
     token_file = os.environ.get("VK_USER_TOKEN_FILE", "vk_user_token.json")
     vk_id_url = os.environ.get("VK_ID_URL", VK_ID_URL).rstrip("/")
     scope = sys.argv[1].replace(",", " ") if len(sys.argv) > 1 else SCOPE
