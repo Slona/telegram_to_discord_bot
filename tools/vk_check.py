@@ -6,8 +6,8 @@ environment/.env. Optional VK_CA_FILE points at a PEM bundle to trust instead of
 the system store (e.g. `python -c "import certifi; print(certifi.where())"`).
 
 Nothing visible is published: the test post is a postponed post a year ahead.
-A community key can't delete posts (wall.delete), so ONE postponed post
-("api check, ignore") stays behind: remove it under "Отложенные записи".
+A community key can't delete posts (wall.delete), so up to TWO postponed posts
+("api check photo/doc, ignore") stay behind: remove them under "Отложенные записи".
 """
 
 import asyncio
@@ -115,16 +115,34 @@ async def main():
                    await call(session, token, method, **extra))
 
         photo = await upload_message_photo(session, token)
-        doc = None if photo else await upload_doc(session, token, group_id)
-        attachment = photo or doc
+        doc = await upload_doc(session, token, group_id)
 
-        params = dict(owner_id=-group_id, from_group=1, message="api check, ignore",
-                      publish_date=int(time.time()) + 365 * 24 * 3600)
-        if attachment:
-            params["attachments"] = attachment
-        kind = "photo" if photo else "doc"
-        label = f"wall.post (postponed, with the {kind} attached)" if attachment             else "wall.post (postponed, text only)"
-        report(label, await call(session, token, "wall.post", **params))
+        # Publish one postponed post per route, then READ IT BACK: wall.post
+        # accepts attachments it later drops, so success alone proves nothing.
+        for kind, attachment in (("photo", photo), ("doc", doc)):
+            if not attachment:
+                continue
+            posted = report(f"wall.post (postponed, with the {kind} attached)",
+                            await call(session, token, "wall.post", owner_id=-group_id,
+                                       from_group=1, message=f"api check {kind}, ignore",
+                                       attachments=attachment,
+                                       publish_date=int(time.time()) + 365 * 24 * 3600))
+            if not posted:
+                continue
+            back = report(f"wall.getById ({kind} post read back)",
+                          await call(session, token, "wall.getById",
+                                     posts=f"-{group_id}_{posted['post_id']}"))
+            if back is None:
+                continue
+            items = back.get("items", back) if isinstance(back, dict) else back
+            if not items:
+                print(f"[WARN] {kind}: VK returned nothing for the postponed post, "
+                      "can't verify; look at it in 'Отложенные записи' by hand")
+                continue
+            kinds = [a.get("type") for a in (items[0].get("attachments") or [])]
+            print(f"[{' OK ' if kind in kinds else 'FAIL'}] the {kind} attachment is "
+                  f"{'really on the post' if kind in kinds else 'MISSING from the post'}"
+                  f" (attachments seen: {kinds})")
 
         video = report("video.save (video upload)",
                        await call(session, token, "video.save", group_id=group_id,
@@ -134,7 +152,7 @@ async def main():
                   f"manually: video_id={video.get('video_id')}")
 
     print("\nSend me only the [ OK ]/[FAIL] lines above, never the token.")
-    print("Then delete the postponed post 'api check, ignore' in the community.")
+    print("Then delete the postponed 'api check ...' posts in the community.")
 
 
 if __name__ == "__main__":
