@@ -9,6 +9,10 @@ wall use an admin's user token. This asks VK for one through your own VK app
    that is an ADMIN of the community, approve access.
 2. Paste the address the browser ends up on (oauth.vk.com/blank.html#...).
 
+If VK answers "invalid scope", run with --probe: it prints one link per right,
+so you can see which rights your app may request. Then pass the allowed ones:
+    python3 tools/vk_user_auth.py wall,photos,offline
+
 The token grants access to that personal account (wall, photos, video,
 groups), so the token file (VK_USER_TOKEN_FILE, default vk_user_token.json) is
 a secret: keep it on the server only and never share it.
@@ -28,18 +32,30 @@ SCOPE = "wall,photos,video,groups,offline"
 REDIRECT_URI = "https://oauth.vk.com/blank.html"
 
 
-def main():
-    app_id = os.environ["VK_APP_ID"]
-    token_file = os.environ.get("VK_USER_TOKEN_FILE", "vk_user_token.json")
-
-    url = "https://oauth.vk.com/authorize?" + urlencode({
+def auth_url(app_id, scope):
+    return "https://oauth.vk.com/authorize?" + urlencode({
         "client_id": app_id,
         "display": "page",
         "redirect_uri": REDIRECT_URI,
-        "scope": SCOPE,
+        "scope": scope,
         "response_type": "token",
         "v": "5.199",
     })
+
+
+def main():
+    app_id = os.environ["VK_APP_ID"]
+    token_file = os.environ.get("VK_USER_TOKEN_FILE", "vk_user_token.json")
+    arg = sys.argv[1] if len(sys.argv) > 1 else SCOPE
+
+    if arg == "--probe":
+        print("Open each link. 'invalid scope' right away = the app may not request")
+        print("that right; a sign-in/approval page = allowed (just close it, don't approve).\n")
+        for right in SCOPE.split(","):
+            print(f"{right}:\n{auth_url(app_id, right)}\n")
+        return
+
+    url = auth_url(app_id, arg)
     print("Open this link as a community admin and approve access:\n\n" + url + "\n")
     answer = input("Paste the address you were redirected to: ").strip()
 
