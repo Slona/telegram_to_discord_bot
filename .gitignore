@@ -139,3 +139,7 @@ dmypy.json
 # Tumblr OAuth tokens (secret, rotate on refresh)
 tumblr_token.json
 tumblr_token.json.tmp
+
+# VK admin user token (secret)
+vk_user_token.json
+vk_user_token.json.tmp

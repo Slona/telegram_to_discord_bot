@@ -12,6 +12,7 @@ A community key can't delete posts (wall.delete), so ONE postponed post
 
 import asyncio
 import base64
+import json
 import os
 import ssl
 import struct
@@ -112,6 +113,70 @@ async def upload_message_photo(session, token):
     return f"photo{photo['owner_id']}_{photo['id']}{key}"
 
 
+USER_TOKEN_FILE = os.environ.get("VK_USER_TOKEN_FILE", "vk_user_token.json")
+
+
+async def user_token_checks(session, group_id):
+    """Same job with an admin's USER token (tools/vk_user_auth.py), the way
+    bots that post pictures to a community wall do it."""
+    try:
+        with open(USER_TOKEN_FILE, encoding="utf-8") as fh:
+            token = json.load(fh)["access_token"]
+    except (OSError, ValueError, KeyError):
+        print(f"\n(no {USER_TOKEN_FILE}: user-token checks skipped, see tools/vk_user_auth.py)")
+        return
+    print("\n--- with the admin's USER token ---")
+    report("users.get (token works)", await call(session, token, "users.get"))
+
+    attachment = None
+    server = report("photos.getWallUploadServer",
+                    await call(session, token, "photos.getWallUploadServer",
+                               group_id=group_id))
+    if server:
+        form = aiohttp.FormData()
+        form.add_field("photo", TEST_IMAGE, filename="api_check.png", content_type="image/png")
+        async with session.post(server["upload_url"], data=form) as resp:
+            uploaded = await resp.json(content_type=None)
+        if uploaded.get("photo") in (None, "", "[]"):
+            print(f"[FAIL] photo upload to VK server: {uploaded}")
+        else:
+            saved = report("photos.saveWallPhoto",
+                           await call(session, token, "photos.saveWallPhoto",
+                                      group_id=group_id, photo=uploaded["photo"],
+                                      server=uploaded["server"], hash=uploaded["hash"]))
+            if saved:
+                attachment = f"photo{saved[0]['owner_id']}_{saved[0]['id']}"
+
+    if attachment:
+        post = report("wall.post (postponed, as the community, with the photo)",
+                      await call(session, token, "wall.post", owner_id=-group_id,
+                                 from_group=1, message="api check user photo, ignore",
+                                 attachments=attachment,
+                                 publish_date=int(time.time()) + 365 * 24 * 3600))
+        if post:
+            back = report("wall.getById (read back)",
+                          await call(session, token, "wall.getById",
+                                     posts=f"-{group_id}_{post['post_id']}"))
+            items = (back.get("items", back) if isinstance(back, dict) else back) or []
+            kinds = [a.get("type") for a in (items[0].get("attachments") or [])] if items else None
+            if kinds is None:
+                print("[WARN] can't read the postponed post back: check "
+                      "'api check user photo' in 'Отложенные записи' by hand")
+            else:
+                print(f"[{' OK ' if 'photo' in kinds else 'FAIL'}] photo on the post: {kinds}")
+                report("wall.delete (cleanup)",
+                       await call(session, token, "wall.delete", owner_id=-group_id,
+                                  post_id=post["post_id"]))
+
+    video = report("video.save (video upload)",
+                   await call(session, token, "video.save", group_id=group_id,
+                              name="api check", is_private=1))
+    if video:
+        report("video.delete (cleanup of the empty stub)",
+               await call(session, token, "video.delete", owner_id=video.get("owner_id"),
+                          video_id=video.get("video_id")))
+
+
 async def main():
     token = os.environ["VK_TOKEN"]
     group_id = int(os.environ["VK_GROUP_ID"])
@@ -158,6 +223,8 @@ async def main():
         if video:
             print("       video upload is allowed; delete the stub video "
                   f"manually: video_id={video.get('video_id')}")
+
+        await user_token_checks(session, group_id)
 
     print("\nSend me only the [ OK ]/[FAIL] lines above, never the token.")
     print("Then look at the postponed 'api check link' post: is there a card with a picture?")
