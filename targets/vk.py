@@ -1,12 +1,15 @@
-"""Relay target for a VK community wall.
+"""Relay target for a VK community wall (text only).
 
-Works with a *community* access key, which limits what is possible (checked
-with tools/vk_check.py): text and photos are supported, video is not (video.save
-is user-only), so video and anything else VK won't take is replaced by a link
-to the original Telegram post.
+A community access key can only publish text (checked step by step with
+tools/vk_check.py): photo upload routes for the wall/albums and video.save are
+user-only; photos uploaded through the messages route are accepted by wall.post
+but silently dropped, and as a link-snippet picture they are rejected; documents
+show as a bare file name. So media is replaced by a link to the original post.
+Real photos need a *user* token with the photos/wall rights, which VK grants only
+on request to its developer support.
 
 Env:
-  VK_TOKEN       community access key (rights: wall, photos, messages)
+  VK_TOKEN       community access key (right: wall)
   VK_GROUP_ID    numeric community id, no minus sign
   VK_API_VERSION optional, defaults to 5.199
   VK_CA_FILE     optional PEM bundle to trust instead of the system store
@@ -20,17 +23,12 @@ import ssl
 import uuid
 from html.parser import HTMLParser
 
-import aiohttp
-
 from . import Post, Target
 
 logger = logging.getLogger("tg_relay.vk")
 
 API_URL = "https://api.vk.com/method/"
 TEXT_LIMIT = 16000            # VK's hard limit is 16384 characters
-PHOTOS_PER_POST = 10
-PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".gif"}
-PHOTO_MAX_BYTES = 50 * 1024 * 1024
 FLOOD_RETRIES = 3
 
 ERR_TOO_MANY_REQUESTS = 6
@@ -125,67 +123,38 @@ class VkTarget(Target):
                 continue
             raise VkError(error.get("error_code"), error.get("error_msg"))
 
-    async def upload_photo(self, path):
-        """Upload one image via the messages route (the only photo route a
-        community key may use) and return its wall attachment string."""
-        server = await self.call("photos.getMessagesUploadServer")
-        form = aiohttp.FormData()
-        with open(path, "rb") as fh:
-            form.add_field("photo", fh, filename=os.path.basename(path))
-            async with self.session.post(server["upload_url"], data=form,
-                                         ssl=self.ssl_context) as resp:
-                uploaded = await resp.json(content_type=None)
-        if not uploaded.get("photo"):
-            raise VkError(None, f"photo upload rejected: {uploaded}")
-        saved = await self.call("photos.saveMessagesPhoto", photo=uploaded["photo"],
-                                server=uploaded["server"], hash=uploaded["hash"])
-        photo = saved[0]
-        key = f"_{photo['access_key']}" if photo.get("access_key") else ""
-        return f"photo{photo['owner_id']}_{photo['id']}{key}"
-
-    async def wall_post(self, message, attachments):
+    async def wall_post(self, message):
         params = dict(owner_id=-self.group_id, from_group=1, message=message,
                       guid=uuid.uuid4().hex)
-        if attachments:
-            params["attachments"] = ",".join(attachments)
         try:
             return await self.call("wall.post", **params)
         except VkError as e:
-            if e.code != ERR_HYPERLINKS_FORBIDDEN or not message:
+            stripped = URL_RE.sub("", message).strip()
+            if e.code != ERR_HYPERLINKS_FORBIDDEN or not stripped:
                 raise
             # The community blocks links in posts: publish without them.
             logger.warning("VK forbids hyperlinks here, retrying without URLs")
-            params["message"] = URL_RE.sub("", message).strip()
-            params["guid"] = uuid.uuid4().hex
-            if not params["message"] and not attachments:
-                raise
+            params.update(message=stripped, guid=uuid.uuid4().hex)
             return await self.call("wall.post", **params)
 
     async def send(self, post: Post):
         text = html_to_plain(post.html).strip()
-
-        attachments, skipped = [], 0
-        for path in post.media:
-            ext = os.path.splitext(path)[1].lower()
-            if ext not in PHOTO_EXTS or os.path.getsize(path) > PHOTO_MAX_BYTES:
-                skipped += 1  # video, audio, stickers, huge files...
-                continue
-            if len(attachments) >= PHOTOS_PER_POST:
-                skipped += 1
-                continue
-            try:
-                attachments.append(await self.upload_photo(path))
-            except Exception:
-                logger.exception("Photo upload of %s failed, skipping", path)
-                skipped += 1
-
-        if len(text) > TEXT_LIMIT:
+        truncated = len(text) > TEXT_LIMIT
+        if truncated:
             text = text[:TEXT_LIMIT].rstrip() + "…"
-            skipped += 1  # point readers at the full text too
-        if skipped:
-            text = f"{text}\n\n{post.link}".strip()
 
-        if not text and not attachments:
+        if post.media and truncated:
+            note = "Полный текст и медиа — в оригинале"
+        elif post.media:
+            note = "Медиа — в оригинале"
+        elif truncated:
+            note = "Полный текст — в оригинале"
+        else:
+            note = None
+        if note:
+            text = f"{text}\n\n{note}: {post.link}".strip()
+
+        if not text:
             return
-        logger.info("Posting to the VK wall: %s photo(s)", len(attachments))
-        await self.wall_post(text, attachments)
+        logger.info("Posting to the VK wall (%s media in the original)", len(post.media))
+        await self.wall_post(text)
