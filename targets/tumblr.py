@@ -201,6 +201,17 @@ class TumblrTarget(Target):
             return self.tokens["access_token"]
 
     async def _refresh(self):
+        # Take a newer pair written by another process (e.g. a re-run of
+        # tools/tumblr_auth.py) instead of reusing our stale refresh token.
+        try:
+            on_disk = self.store.load()
+        except (OSError, ValueError):
+            on_disk = None
+        if on_disk and on_disk.get("refresh_token") != self.tokens.get("refresh_token"):
+            logger.info("Tumblr token was updated on disk, using that one")
+            self.tokens = on_disk
+            if on_disk["expires_at"] - time.time() >= REFRESH_MARGIN:
+                return
         logger.info("Refreshing the Tumblr access token")
         resp = await asyncio.to_thread(requests.post, f"{API_BASE}/oauth2/token", data={
             "grant_type": "refresh_token",

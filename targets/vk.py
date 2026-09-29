@@ -163,6 +163,7 @@ class VkTarget(Target):
         self.ssl_context = ssl.create_default_context(cafile=ca_file) if ca_file else None
         self._refresh_lock = asyncio.Lock()
         self.denied_kinds = set()  # media kinds the user token lacks the right for
+        self._dead_refresh = None  # refresh token VK ID already rejected
 
     @classmethod
     def from_env(cls):
@@ -212,6 +213,14 @@ class VkTarget(Target):
     # --- admin's user token (VK ID) -----------------------------------------
 
     async def user_token(self):
+        if not self.user_tokens and self.user_store is not None:
+            try:  # someone may have run tools/vk_user_auth.py since
+                on_disk = self.user_store.load()
+            except (OSError, ValueError):
+                on_disk = None
+            if on_disk and on_disk.get("refresh_token") != self._dead_refresh:
+                logger.info("Picked up a new VK user token from %s", self.user_store.path)
+                self.user_tokens = on_disk
         if not self.user_tokens:
             raise UserTokenError("no user token")
         async with self._refresh_lock:
@@ -220,6 +229,18 @@ class VkTarget(Target):
             return self.user_tokens["access_token"]
 
     async def _refresh_user_token(self):
+        # Another process (tools/vk_check.py, a re-run of tools/vk_user_auth.py)
+        # may have refreshed the pair since we loaded it; reusing our old refresh
+        # token would make VK ID revoke the whole chain, so take the file's pair.
+        try:
+            on_disk = self.user_store.load()
+        except (OSError, ValueError):
+            on_disk = None
+        if on_disk and on_disk.get("refresh_token") != self.user_tokens.get("refresh_token"):
+            logger.info("VK user token was updated on disk, using that one")
+            self.user_tokens = on_disk
+            if on_disk["expires_at"] - time.time() >= REFRESH_MARGIN:
+                return
         tokens = self.user_tokens
         if not tokens.get("refresh_token") or not tokens.get("device_id"):
             self.user_tokens = None
@@ -238,7 +259,9 @@ class VkTarget(Target):
                                      ssl=self.ssl_context) as resp:
             body = await resp.json(content_type=None)
         if "access_token" not in body:
-            self.user_tokens = None  # don't hammer VK ID until someone signs in again
+            # Don't retry this refresh token; wait for a new sign-in on disk.
+            self._dead_refresh = tokens["refresh_token"]
+            self.user_tokens = None
             raise UserTokenError(f"refresh failed: {body.get('error')} "
                                  f"{body.get('error_description', '')}")
         self.user_tokens = UserTokenStore.from_response(body, tokens["device_id"], tokens)
@@ -300,9 +323,10 @@ class VkTarget(Target):
 
         title = (text.splitlines() or [""])[0].strip() or post.source or "Видео"
         attachments, skipped = [], 0
+        token_ok = self.user_store is not None
         for path in post.media:
             kind = classify(path)
-            if (kind is None or kind in self.denied_kinds or self.user_tokens is None
+            if (kind is None or kind in self.denied_kinds or not token_ok
                     or len(attachments) >= ATTACHMENTS_PER_POST):
                 skipped += 1
                 continue
@@ -314,6 +338,7 @@ class VkTarget(Target):
             except UserTokenError as e:
                 logger.error("VK user token unusable (%s): media goes as a link until "
                              "tools/vk_user_auth.py is run again", e)
+                token_ok = False  # one error per post is enough
                 skipped += 1
             except VkError as e:
                 if e.code != ERR_ACCESS_DENIED:
