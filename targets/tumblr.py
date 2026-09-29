@@ -228,6 +228,12 @@ class TumblrTarget(Target):
                                  timeout=POST_TIMEOUT)
             if resp.status_code not in (200, 201):
                 raise TumblrError(resp.status_code, resp.text)
+            try:
+                post_id = resp.json()["response"]["id"]
+            except (ValueError, KeyError, TypeError):
+                post_id = "?"
+            logger.info("Tumblr post created on %s: id %s (HTTP %s)",
+                        self.blog, post_id, resp.status_code)
         finally:
             for fh in handles:
                 fh.close()
