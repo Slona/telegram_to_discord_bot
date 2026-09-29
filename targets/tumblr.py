@@ -9,6 +9,10 @@ Env:
 
 Tumblr access tokens last ~42 minutes and each refresh hands out a new
 refresh token, so the token file is rewritten on every refresh.
+
+Requests go through `requests` in a worker thread rather than aiohttp: from the
+production server Tumblr drops every aiohttp connection ("Server disconnected")
+while the very same requests via `requests`/curl get answered.
 """
 
 import asyncio
@@ -20,7 +24,7 @@ import time
 import uuid
 from html.parser import HTMLParser
 
-import aiohttp
+import requests
 
 from . import Post, Target
 
@@ -32,6 +36,8 @@ IMAGES_PER_POST = 30
 VIDEOS_PER_POST = 1       # native (uploaded) videos
 LINKS_PER_POST = 100
 REFRESH_MARGIN = 60       # seconds before expiry to refresh
+REFRESH_TIMEOUT = 30
+POST_TIMEOUT = 600        # uploads can be big
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif"}
 VIDEO_EXTS = {".mp4", ".mov"}
@@ -196,41 +202,39 @@ class TumblrTarget(Target):
 
     async def _refresh(self):
         logger.info("Refreshing the Tumblr access token")
-        async with self.session.post(f"{API_BASE}/oauth2/token", data={
+        resp = await asyncio.to_thread(requests.post, f"{API_BASE}/oauth2/token", data={
             "grant_type": "refresh_token",
             "refresh_token": self.tokens["refresh_token"],
             "client_id": self.client_id,
             "client_secret": self.client_secret,
-        }) as resp:
-            body = await resp.text()
-            if resp.status != 200:
-                raise TumblrError(resp.status, body + " (rerun tools/tumblr_auth.py?)")
-            self.tokens = TokenStore.from_token_response(json.loads(body))
+        }, timeout=REFRESH_TIMEOUT)
+        if resp.status_code != 200:
+            raise TumblrError(resp.status_code, resp.text + " (rerun tools/tumblr_auth.py?)")
+        self.tokens = TokenStore.from_token_response(resp.json())
         self.store.save(self.tokens)
 
-    async def create_post(self, content, files):
-        """POST the NPF post; `files` maps identifier -> (path, mime type)."""
-        form = aiohttp.FormData()
-        form.add_field("json", json.dumps({"content": content, "state": "published"}),
-                       content_type="application/json")
+    def _post_sync(self, token, content, files):
+        """Blocking multipart POST of an NPF post; runs in a worker thread."""
         handles = []
         try:
+            parts = {"json": (None, json.dumps({"content": content, "state": "published"}),
+                              "application/json")}
             for identifier, (path, mime) in files.items():
                 fh = open(path, "rb")
                 handles.append(fh)
-                form.add_field(identifier, fh, filename=os.path.basename(path),
-                               content_type=mime)
-            token = await self.access_token()
-            async with self.session.post(
-                f"{API_BASE}/blog/{self.blog}/posts", data=form,
-                headers={"Authorization": f"Bearer {token}"},
-            ) as resp:
-                body = await resp.text()
-                if resp.status not in (200, 201):
-                    raise TumblrError(resp.status, body)
+                parts[identifier] = (os.path.basename(path), fh, mime)
+            resp = requests.post(f"{API_BASE}/blog/{self.blog}/posts", files=parts,
+                                 headers={"Authorization": f"Bearer {token}"},
+                                 timeout=POST_TIMEOUT)
+            if resp.status_code not in (200, 201):
+                raise TumblrError(resp.status_code, resp.text)
         finally:
             for fh in handles:
                 fh.close()
+
+    async def create_post(self, token, content, files):
+        """POST the NPF post; `files` maps identifier -> (path, mime type)."""
+        await asyncio.to_thread(self._post_sync, token, content, files)
 
     async def send(self, post: Post):
         images, videos, skipped = [], [], 0
@@ -263,14 +267,16 @@ class TumblrTarget(Target):
         if not content:
             return
         logger.info("Posting to Tumblr: %s image(s), %s video(s)", len(images), len(videos))
+        # Token problems must surface as such, not as a failed media upload.
+        token = await self.access_token()
         try:
-            await self.create_post(content, files)
-        except (TumblrError, aiohttp.ClientError) as e:
+            await self.create_post(token, content, files)
+        except (TumblrError, requests.RequestException) as e:
             rejected = isinstance(e, TumblrError) and e.codes & UPLOAD_ERROR_CODES
-            dropped = isinstance(e, aiohttp.ClientError)  # connection cut mid-upload
+            dropped = isinstance(e, requests.RequestException)  # connection cut mid-upload
             if not files or not (rejected or dropped):
                 raise
             # Tumblr refused the media (format, quota, transcoding...) or hung up
             # while it was being uploaded: keep the text.
             logger.warning("Tumblr media upload failed (%s), posting text and a link", e)
-            await self.create_post(assemble([], True), {})
+            await self.create_post(token, assemble([], True), {})
