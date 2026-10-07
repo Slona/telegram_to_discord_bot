@@ -15,6 +15,11 @@ class Post:
     plain: str                 # same text with no formatting at all
     link: str                  # URL of the original Telegram post
     media: list[str] = field(default_factory=list)  # local file paths
+    # URL buttons under the Telegram post, as rows of (label, url)
+    buttons: list[list[tuple[str, str]]] = field(default_factory=list)
+
+    def flat_buttons(self):
+        return [button for row in self.buttons for button in row]
 
 
 class Target:

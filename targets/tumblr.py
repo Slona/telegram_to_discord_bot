@@ -158,6 +158,18 @@ def text_blocks(text, formatting):
     return blocks
 
 
+def buttons_block(buttons):
+    """A text block 'label | label' whose labels link to the buttons' URLs."""
+    text, formatting = "", []
+    for i, (label, url) in enumerate(buttons):
+        if i:
+            text += " | "
+        start = len(text)
+        text += label
+        formatting.append({"start": start, "end": len(text), "type": "link", "url": url})
+    return {"type": "text", "text": text, "formatting": formatting}
+
+
 def link_block(url):
     return {"type": "text", "text": url,
             "formatting": [{"start": 0, "end": len(url), "type": "link", "url": url}]}
@@ -277,8 +289,12 @@ class TumblrTarget(Target):
             media_blocks.append({"type": kind,
                                  "media": media if kind == "video" else [media]})
 
+        buttons = post.flat_buttons()
+        button_part = [buttons_block(buttons)] if buttons else []
+
         def assemble(blocks, extra_link):
-            return blocks + text_part + ([link_block(post.link)] if extra_link else [])
+            return (blocks + text_part + button_part
+                    + ([link_block(post.link)] if extra_link else []))
 
         content = assemble(media_blocks, skipped > 0)
         if not content:

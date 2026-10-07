@@ -10,6 +10,7 @@ Env:
 
 import asyncio
 import dataclasses
+import html
 import logging
 import os
 import ssl
@@ -40,6 +41,30 @@ class MaxError(Exception):
         super().__init__(f"MAX API error {status}: {body}")
         self.status = status
         self.body = body
+
+
+def keyboard(post):
+    """The Telegram buttons as a MAX inline keyboard attachment (or None)."""
+    if not post.buttons:
+        return None
+    rows = [[{"type": "link", "text": label, "url": url} for label, url in row]
+            for row in post.buttons]
+    return {"type": "inline_keyboard", "payload": {"buttons": rows}}
+
+
+def without_keyboard(body):
+    """The same message with the keyboard turned into links at the end of the text."""
+    attachments = body.get("attachments") or []
+    keyboards = [a for a in attachments if a.get("type") == "inline_keyboard"]
+    links = " | ".join(
+        f'<a href="{html.escape(b["url"], quote=True)}">{html.escape(b["text"])}</a>'
+        for a in keyboards for row in a["payload"]["buttons"] for b in row)
+    text = body.get("text") or ""
+    if body.get("format") != "html":
+        text = html.escape(text)
+    rest = dict(body, format="html", text=f"{text}\n\n{links}".strip())
+    rest["attachments"] = [a for a in attachments if a not in keyboards]
+    return rest
 
 
 def classify(path):
@@ -128,19 +153,36 @@ class MaxTarget(Target):
                             f", {message['url']}" if message.get("url") else "")
                 return result
             except MaxError as e:
-                if "attachment.not.ready" not in e.body or attempt == NOT_READY_RETRIES - 1:
+                if "attachment.not.ready" in e.body:
+                    if attempt == NOT_READY_RETRIES - 1:
+                        raise
+                    logger.info("Attachment not ready yet, retrying in %.0fs", delay)
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                elif any(a.get("type") == "inline_keyboard"
+                         for a in body.get("attachments") or []):
+                    # MAX didn't take the keyboard: send the buttons as links instead.
+                    logger.warning("MAX rejected the buttons (%s), sending links instead", e)
+                    body = without_keyboard(body)
+                else:
                     raise
-                logger.info("Attachment not ready yet, retrying in %.0fs", delay)
-                await asyncio.sleep(delay)
-                delay *= 2
 
-    async def send_text(self, post):
+    async def send_text(self, post, extra=()):
+        """Text message(s); `extra` attachments (the keyboard) ride on the last one."""
+        extra = list(extra)
         if len(post.html) <= TEXT_LIMIT:
-            await self.post_message({"text": post.html, "format": "html"})
+            body = {"text": post.html, "format": "html"}
+            if extra:
+                body["attachments"] = extra
+            await self.post_message(body)
             return
         # Too long for one message: split the unformatted text so no tag is cut in half.
-        for chunk in textwrap.wrap(post.plain, TEXT_LIMIT, replace_whitespace=False):
-            await self.post_message({"text": chunk})
+        chunks = textwrap.wrap(post.plain, TEXT_LIMIT, replace_whitespace=False)
+        for i, chunk in enumerate(chunks):
+            body = {"text": chunk}
+            if extra and i == len(chunks) - 1:
+                body["attachments"] = extra
+            await self.post_message(body)
             await asyncio.sleep(SEND_INTERVAL)
 
     async def send(self, post: Post):
@@ -169,9 +211,10 @@ class MaxTarget(Target):
                 plain=(post.plain + suffix).strip(),
             )
 
+        board = keyboard(post)
         if not attachments:
-            if post.plain:
-                await self.send_text(post)
+            if post.plain or board:
+                await self.send_text(post, [board] if board else [])
             return
 
         # Attachments go in batches; the caption rides on the first batch when it fits.
@@ -179,7 +222,7 @@ class MaxTarget(Target):
         batches = [attachments[i:i + ATTACHMENTS_PER_MESSAGE]
                    for i in range(0, len(attachments), ATTACHMENTS_PER_MESSAGE)]
         for i, batch in enumerate(batches):
-            body = {"attachments": batch}
+            body = {"attachments": batch + ([board] if board and i == 0 else [])}
             if i == 0 and post.html and caption_fits:
                 body.update(text=post.html, format="html")
             await self.post_message(body)

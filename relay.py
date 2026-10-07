@@ -28,6 +28,28 @@ def telegram_link(chat, message):
     return f"https://t.me/c/{chat.id}/{message.id}"
 
 
+def extract_buttons(messages):
+    """URL buttons of a post as rows of (label, url).
+
+    Read straight from reply_markup: Message.buttons needs the chat entity to be
+    resolvable and can come back empty. Only http(s) links are kept (no callbacks,
+    no tg:// deep links) since other platforms can't use those.
+    """
+    for message in messages:
+        rows = getattr(getattr(message, "reply_markup", None), "rows", None)
+        if not rows:
+            continue
+        result = []
+        for row in rows:
+            items = [(b.text, b.url) for b in getattr(row, "buttons", [])
+                     if (getattr(b, "url", None) or "").startswith(("http://", "https://"))]
+            if items:
+                result.append(items)
+        if result:
+            return result
+    return []
+
+
 def safe_name(path):
     """Rename a downloaded file so its name is plain ASCII without spaces or
     brackets: VK and Tumblr choke on names like 'photo (1).jpg' in uploads."""
@@ -72,11 +94,15 @@ async def relay(messages, chat, targets, dlloc):
         plain = text_message.raw_text if text_message else ""
         media_messages = [m for m in messages if is_relayable_media(m)]
         paths = await download_media(media_messages, dlloc)
-        if not text and not paths:
+        buttons = extract_buttons(messages)
+        if buttons:
+            logger.info("Post %s has %s URL button(s)", messages[0].id,
+                        sum(len(row) for row in buttons))
+        if not text and not paths and not buttons:
             return
 
         post = Post(source=chat.title, text=text, html=html, plain=plain,
-                    link=telegram_link(chat, messages[0]), media=paths)
+                    link=telegram_link(chat, messages[0]), media=paths, buttons=buttons)
         results = await asyncio.gather(
             *(t.send(post) for t in targets), return_exceptions=True
         )

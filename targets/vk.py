@@ -321,6 +321,11 @@ class VkTarget(Target):
         if truncated:
             text = text[:TEXT_LIMIT].rstrip() + "…"
 
+        buttons = post.flat_buttons()
+        if buttons:  # the wall has no buttons: list the links under the text
+            lines = "\n".join(f"{label}: {url}" for label, url in buttons)
+            text = f"{text}\n\n{lines}".strip()
+
         title = (text.splitlines() or [""])[0].strip() or post.source or "Видео"
         attachments, skipped = [], 0
         token_ok = self.user_store is not None

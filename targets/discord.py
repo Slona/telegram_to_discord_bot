@@ -12,6 +12,18 @@ MSG_LIMIT = 2000
 ATTACHMENT_LIMIT = 10
 
 
+def with_buttons(post):
+    """Post text plus its buttons as a line of links (webhooks can't carry buttons).
+    <url> keeps Discord from expanding every link into a big embed."""
+    text = post.text
+    buttons = post.flat_buttons()
+    if buttons:
+        links = " | ".join(
+            f"[{label.replace('[', '(').replace(']', ')')}](<{url}>)" for label, url in buttons)
+        text = f"{text}\n\n{links}" if text else links
+    return text
+
+
 class DiscordTarget(Target):
     name = "discord"
 
@@ -32,13 +44,14 @@ class DiscordTarget(Target):
             await self.webhook.send(content=line, username=username)
 
     async def send(self, post: Post):
+        text = with_buttons(post)
         if not post.media:
-            if post.text:
+            if text:
                 logger.info("Sending text only")
-                await self.send_text(post.text, post.source)
+                await self.send_text(text, post.source)
             return
 
-        caption = post.text
+        caption = text
         files = [nextcord.File(p) for p in post.media[:ATTACHMENT_LIMIT]]
         try:
             logger.info("Sending %s attachment(s)", len(files))
