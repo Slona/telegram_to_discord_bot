@@ -118,10 +118,15 @@ class MaxTarget(Target):
         delay = 1.0
         for attempt in range(NOT_READY_RETRIES):
             try:
-                return await self._json(
+                result = await self._json(
                     "POST", f"{self.api_url}/messages",
                     params={"chat_id": self.chat_id}, json=body,
                 )
+                message = (result or {}).get("message") or {}
+                logger.info("MAX message sent: %s attachment(s)%s",
+                            len(body.get("attachments") or []),
+                            f", {message['url']}" if message.get("url") else "")
+                return result
             except MaxError as e:
                 if "attachment.not.ready" not in e.body or attempt == NOT_READY_RETRIES - 1:
                     raise
