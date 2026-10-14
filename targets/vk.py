@@ -25,6 +25,7 @@ Env:
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import re
 import secrets
@@ -274,13 +275,28 @@ class VkTarget(Target):
             async with self.session.post(url, data=form, ssl=self.ssl_context) as resp:
                 return await resp.json(content_type=None)
 
+    async def _upload_image(self, url, path):
+        """Photos go as bytes with an explicit image Content-Type, exactly the way
+        tools/vk_check.py uploads them. Sent as a bare file object the real photos
+        came back from VK with an empty "photo" field (rejected)."""
+        with open(path, "rb") as fh:
+            data = fh.read()
+        content_type = mimetypes.guess_type(path)[0] or "image/jpeg"
+        form = aiohttp.FormData()
+        form.add_field("photo", data, filename=os.path.basename(path),
+                       content_type=content_type)
+        async with self.session.post(url, data=form, ssl=self.ssl_context) as resp:
+            uploaded = await resp.json(content_type=None)
+        return uploaded, len(data), content_type
+
     async def upload_photo(self, path):
         token = await self.user_token()
         server = await self.call("photos.getWallUploadServer", _token=token,
                                  group_id=self.group_id)
-        uploaded = await self._upload(server["upload_url"], "photo", path)
+        uploaded, size, content_type = await self._upload_image(server["upload_url"], path)
         if uploaded.get("photo") in (None, "", "[]"):
-            raise VkError(None, f"photo upload rejected: {uploaded}")
+            raise VkError(None, f"photo upload rejected ({size} bytes, {content_type}, "
+                                f"{os.path.basename(path)}): {uploaded}")
         saved = await self.call("photos.saveWallPhoto", _token=token, group_id=self.group_id,
                                 photo=uploaded["photo"], server=uploaded["server"],
                                 hash=uploaded["hash"])
