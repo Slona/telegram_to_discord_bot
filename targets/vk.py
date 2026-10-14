@@ -37,7 +37,7 @@ from html.parser import HTMLParser
 
 import aiohttp
 
-from . import Post, Target
+from . import KEEPALIVE_AFTER, Post, Target, keepalive_loop
 
 logger = logging.getLogger("tg_relay.vk")
 
@@ -99,6 +99,7 @@ class UserTokenStore:
             "device_id": device_id,
             "user_id": resp.get("user_id"),
             "expires_at": time.time() + int(resp.get("expires_in", 3600)),
+            "refreshed_at": time.time(),
         }
 
 
@@ -193,6 +194,7 @@ class VkTarget(Target):
         except (OSError, ValueError):
             logger.warning("No VK user token in %s (run tools/vk_user_auth.py): "
                            "VK gets text and a link, no media", self.user_store.path)
+        self._keepalive = asyncio.create_task(keepalive_loop("VK", self._keepalive_step))
 
     # --- VK API -----------------------------------------------------------
 
@@ -232,7 +234,24 @@ class VkTarget(Target):
                 await self._refresh_user_token()
             return self.user_tokens["access_token"]
 
-    async def _refresh_user_token(self):
+    @staticmethod
+    def _due(tokens, force):
+        if force:  # keepalive: the pair has gone unused for a day
+            return time.time() - tokens.get("refreshed_at", 0) >= KEEPALIVE_AFTER
+        return tokens["expires_at"] - time.time() < REFRESH_MARGIN
+
+    async def _keepalive_step(self):
+        try:
+            await self.user_token()  # picks up a new sign-in, renews an expired token
+            async with self._refresh_lock:
+                if self.user_tokens and self._due(self.user_tokens, force=True):
+                    await self._refresh_user_token(force=True)
+        except UserTokenError as e:
+            if str(e) != "no user token":  # that one was reported when it happened
+                logger.error("VK user token keepalive: %s; media goes as a link until "
+                             "tools/vk_user_auth.py is run again", e)
+
+    async def _refresh_user_token(self, force=False):
         # Another process (tools/vk_check.py, a re-run of tools/vk_user_auth.py)
         # may have refreshed the pair since we loaded it; reusing our old refresh
         # token would make VK ID revoke the whole chain, so take the file's pair.
@@ -243,7 +262,7 @@ class VkTarget(Target):
         if on_disk and on_disk.get("refresh_token") != self.user_tokens.get("refresh_token"):
             logger.info("VK user token was updated on disk, using that one")
             self.user_tokens = on_disk
-            if on_disk["expires_at"] - time.time() >= REFRESH_MARGIN:
+            if not self._due(on_disk, force):
                 return
         tokens = self.user_tokens
         if not tokens.get("refresh_token") or not tokens.get("device_id"):

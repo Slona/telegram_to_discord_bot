@@ -1,9 +1,33 @@
 """Relay targets. Each target is enabled only when its env vars are set."""
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 
 logger = logging.getLogger("tg_relay")
+
+# OAuth tokens that only change hands when a post needs them could expire from
+# disuse, so every target that holds a refresh token renews it at least this often.
+KEEPALIVE_AFTER = 24 * 3600     # renew a token pair older than this
+KEEPALIVE_CHECK = 3600          # how often to look
+KEEPALIVE_BACKOFF = 6 * 3600    # wait this long after a failed attempt
+
+
+async def keepalive_loop(name, step):
+    """Call `step()` every KEEPALIVE_CHECK seconds, forever. `step` renews the
+    token if it is due and raises on failure (which is logged, then retried later)."""
+    delay = KEEPALIVE_CHECK
+    while True:
+        await asyncio.sleep(delay)
+        try:
+            await step()
+            delay = KEEPALIVE_CHECK
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("%s token keepalive failed, trying again in %s h",
+                             name, KEEPALIVE_BACKOFF // 3600)
+            delay = KEEPALIVE_BACKOFF
 
 
 @dataclass

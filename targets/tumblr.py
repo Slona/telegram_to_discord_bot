@@ -26,7 +26,7 @@ from html.parser import HTMLParser
 
 import requests
 
-from . import Post, Target
+from . import KEEPALIVE_AFTER, Post, Target, keepalive_loop
 
 logger = logging.getLogger("tg_relay.tumblr")
 
@@ -80,6 +80,7 @@ class TokenStore:
             "access_token": resp["access_token"],
             "refresh_token": resp["refresh_token"],
             "expires_at": time.time() + int(resp.get("expires_in", 2520)),
+            "refreshed_at": time.time(),
         }
 
 
@@ -205,6 +206,8 @@ class TumblrTarget(Target):
             logger.error("No Tumblr tokens in %s: run tools/tumblr_auth.py first",
                          self.store.path)
             raise
+        self._keepalive = asyncio.create_task(
+            keepalive_loop("Tumblr", self._keepalive_step))
 
     async def access_token(self):
         async with self._refresh_lock:
@@ -212,7 +215,18 @@ class TumblrTarget(Target):
                 await self._refresh()
             return self.tokens["access_token"]
 
-    async def _refresh(self):
+    @staticmethod
+    def _due(tokens, force):
+        if force:  # keepalive: the pair has gone unused for a day
+            return time.time() - tokens.get("refreshed_at", 0) >= KEEPALIVE_AFTER
+        return tokens["expires_at"] - time.time() < REFRESH_MARGIN
+
+    async def _keepalive_step(self):
+        async with self._refresh_lock:
+            if self._due(self.tokens, force=True):
+                await self._refresh(force=True)
+
+    async def _refresh(self, force=False):
         # Take a newer pair written by another process (e.g. a re-run of
         # tools/tumblr_auth.py) instead of reusing our stale refresh token.
         try:
@@ -222,7 +236,7 @@ class TumblrTarget(Target):
         if on_disk and on_disk.get("refresh_token") != self.tokens.get("refresh_token"):
             logger.info("Tumblr token was updated on disk, using that one")
             self.tokens = on_disk
-            if on_disk["expires_at"] - time.time() >= REFRESH_MARGIN:
+            if not self._due(on_disk, force):
                 return
         logger.info("Refreshing the Tumblr access token")
         resp = await asyncio.to_thread(requests.post, f"{API_BASE}/oauth2/token", data={
