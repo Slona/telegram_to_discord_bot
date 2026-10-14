@@ -54,6 +54,7 @@ VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 PHOTO_MAX_BYTES = 50 * 1024 * 1024
 
 ERR_ACCESS_DENIED = 15
+ERR_INVALID_PARAM = 100
 ERR_TOO_MANY_REQUESTS = 6
 ERR_HYPERLINKS_FORBIDDEN = 222
 
@@ -350,16 +351,30 @@ class VkTarget(Target):
                       guid=uuid.uuid4().hex)
         if attachments:
             params["attachments"] = ",".join(attachments)
-        try:
-            return await self.call("wall.post", **params)
-        except VkError as e:
-            stripped = URL_RE.sub("", message).strip()
-            if e.code != ERR_HYPERLINKS_FORBIDDEN or not (stripped or attachments):
+        if len(attachments) > 1:
+            # Several photos as one album-like grid; VK's default is a carousel
+            # that shows a single picture at a time.
+            params["primary_attachments_mode"] = "grid"
+        error = None
+        for _ in range(3):
+            try:
+                return await self.call("wall.post", **params)
+            except VkError as e:
+                error = e
+                if e.code == ERR_INVALID_PARAM and "primary_attachments_mode" in params:
+                    logger.warning("VK refused the grid layout (%s), posting without it", e)
+                    del params["primary_attachments_mode"]
+                    params["guid"] = uuid.uuid4().hex
+                    continue
+                stripped = URL_RE.sub("", params["message"]).strip()
+                if (e.code == ERR_HYPERLINKS_FORBIDDEN and stripped != params["message"]
+                        and (stripped or attachments)):
+                    # The community blocks links in posts: publish without them.
+                    logger.warning("VK forbids hyperlinks here, retrying without URLs")
+                    params.update(message=stripped, guid=uuid.uuid4().hex)
+                    continue
                 raise
-            # The community blocks links in posts: publish without them.
-            logger.warning("VK forbids hyperlinks here, retrying without URLs")
-            params.update(message=stripped, guid=uuid.uuid4().hex)
-            return await self.call("wall.post", **params)
+        raise error
 
     async def send(self, post: Post):
         text = html_to_plain(post.html).strip()
