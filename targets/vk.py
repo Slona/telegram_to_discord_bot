@@ -29,6 +29,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
 import ssl
 import time
 import uuid
@@ -44,6 +45,7 @@ API_URL = "https://api.vk.com/method/"
 VK_ID_URL = "https://id.vk.ru"
 TEXT_LIMIT = 16000            # VK's hard limit is 16384 characters
 ATTACHMENTS_PER_POST = 10
+KEEP_REJECTED = 5            # rejected photos kept for inspection
 FLOOD_RETRIES = 3
 REFRESH_MARGIN = 120          # seconds before expiry to refresh the user token
 
@@ -289,14 +291,42 @@ class VkTarget(Target):
             uploaded = await resp.json(content_type=None)
         return uploaded, len(data), content_type
 
+    @staticmethod
+    def _keep_rejected(path):
+        """Copy a photo VK refused to <its folder>/rejected/ so it can be inspected
+        (run tools/vk_photo_test.py on it); only the newest few are kept."""
+        folder = os.path.join(os.path.dirname(path) or ".", "rejected")
+        try:
+            os.makedirs(folder, exist_ok=True)
+            kept = os.path.join(folder, f"{int(time.time())}_{os.path.basename(path)}")
+            shutil.copy2(path, kept)
+            old = sorted(os.listdir(folder))[:-KEEP_REJECTED]
+            for name in old:
+                os.remove(os.path.join(folder, name))
+            return kept
+        except OSError:
+            logger.exception("Could not keep the rejected photo %s", path)
+            return None
+
     async def upload_photo(self, path):
         token = await self.user_token()
-        server = await self.call("photos.getWallUploadServer", _token=token,
-                                 group_id=self.group_id)
-        uploaded, size, content_type = await self._upload_image(server["upload_url"], path)
-        if uploaded.get("photo") in (None, "", "[]"):
-            raise VkError(None, f"photo upload rejected ({size} bytes, {content_type}, "
-                                f"{os.path.basename(path)}): {uploaded}")
+        for attempt in (1, 2):
+            server = await self.call("photos.getWallUploadServer", _token=token,
+                                     group_id=self.group_id)
+            uploaded, size, content_type = await self._upload_image(
+                server["upload_url"], path)
+            if uploaded.get("photo") not in (None, "", "[]"):
+                if attempt == 2:
+                    logger.info("VK took %s on the second try", os.path.basename(path))
+                break
+            detail = (f"photo upload rejected ({size} bytes, {content_type}, "
+                      f"{os.path.basename(path)}): {uploaded}")
+            if attempt == 1:
+                logger.warning("%s; retrying once with a fresh upload server", detail)
+                await asyncio.sleep(1.5)
+                continue
+            kept = self._keep_rejected(path)
+            raise VkError(None, detail + (f"; kept a copy at {kept}" if kept else ""))
         saved = await self.call("photos.saveWallPhoto", _token=token, group_id=self.group_id,
                                 photo=uploaded["photo"], server=uploaded["server"],
                                 hash=uploaded["hash"])
