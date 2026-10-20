@@ -46,6 +46,9 @@ VK_ID_URL = "https://id.vk.ru"
 TEXT_LIMIT = 16000            # VK's hard limit is 16384 characters
 ATTACHMENTS_PER_POST = 10
 KEEP_REJECTED = 5            # rejected photos kept for inspection
+# VK's upload server sometimes answers with an empty photo for a good file, and
+# the second try a few seconds later can still fail: wait longer between tries.
+PHOTO_RETRY_DELAYS = (2, 5, 10)
 FLOOD_RETRIES = 3
 REFRESH_MARGIN = 120          # seconds before expiry to refresh the user token
 
@@ -330,23 +333,27 @@ class VkTarget(Target):
 
     async def upload_photo(self, path):
         token = await self.user_token()
-        for attempt in (1, 2):
+        delays = iter(PHOTO_RETRY_DELAYS)
+        attempt = 0
+        while True:
+            attempt += 1
             server = await self.call("photos.getWallUploadServer", _token=token,
                                      group_id=self.group_id)
             uploaded, size, content_type = await self._upload_image(
                 server["upload_url"], path)
             if uploaded.get("photo") not in (None, "", "[]"):
-                if attempt == 2:
-                    logger.info("VK took %s on the second try", os.path.basename(path))
+                if attempt > 1:
+                    logger.info("VK took %s on try %s", os.path.basename(path), attempt)
                 break
             detail = (f"photo upload rejected ({size} bytes, {content_type}, "
                       f"{os.path.basename(path)}): {uploaded}")
-            if attempt == 1:
-                logger.warning("%s; retrying once with a fresh upload server", detail)
-                await asyncio.sleep(1.5)
-                continue
-            kept = self._keep_rejected(path)
-            raise VkError(None, detail + (f"; kept a copy at {kept}" if kept else ""))
+            delay = next(delays, None)
+            if delay is None:
+                kept = self._keep_rejected(path)
+                raise VkError(None, detail + (f"; kept a copy at {kept}" if kept else ""))
+            logger.warning("%s; try %s failed, retrying in %ss with a fresh upload server",
+                           detail, attempt, delay)
+            await asyncio.sleep(delay)
         saved = await self.call("photos.saveWallPhoto", _token=token, group_id=self.group_id,
                                 photo=uploaded["photo"], server=uploaded["server"],
                                 hash=uploaded["hash"])
@@ -370,9 +377,10 @@ class VkTarget(Target):
                       guid=uuid.uuid4().hex)
         if attachments:
             params["attachments"] = ",".join(attachments)
-        if len(attachments) > 1:
-            # Several photos as one album-like grid; VK's default is a carousel
-            # that shows a single picture at a time.
+        if attachments:
+            # A grid instead of VK's default carousel: several photos show together
+            # like an album, and a lone photo isn't force-cropped to 2:3..16:9
+            # (since June 2026 the first picture of a carousel is).
             params["primary_attachments_mode"] = "grid"
         error = None
         for _ in range(3):
