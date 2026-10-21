@@ -15,12 +15,20 @@ Env:
   THREADS_GRAPH_URL    optional, default https://graph.threads.com
 Without the three THREADS_MEDIA_* settings the post goes out as text with a link
 to the original instead of its pictures and videos.
+
+With ffmpeg/ffprobe installed (apt install ffmpeg) media Threads wouldn't take is
+converted first: videos to H.264/AAC MP4 (over 5 minutes can't be posted), other
+picture formats to JPEG/PNG, big or too elongated pictures resized or padded,
+animated GIFs to video. A text over 500 characters becomes a chain: the post, then
+each next piece as a reply to the previous one (needs the threads_manage_replies
+permission).
 """
 
 import asyncio
 import json
 import logging
 import os
+import re
 import secrets
 import struct
 import time
@@ -28,6 +36,7 @@ import unicodedata
 
 import requests
 
+import media
 from . import Post, Target, keepalive_loop
 from .vk import html_to_plain
 
@@ -38,12 +47,17 @@ API_VERSION = "v1.0"
 HTTP_TIMEOUT = 60
 TEXT_LIMIT = 500
 CAROUSEL_MAX = 20
+MAX_PARTS = 10            # a long post: the post and up to 9 replies
+REPLY_PAUSE = 2           # seconds between a post and its continuation
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
 IMAGE_MAX_BYTES = 8 * 1024 * 1024
 IMAGE_MAX_RATIO = 10
 VIDEO_EXTS = {".mp4", ".mov"}
 VIDEO_MAX_BYTES = 1024 ** 3
+# What ffmpeg can be asked to turn into something Threads accepts.
+VIDEO_LIKE = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".3gp", ".flv", ".wmv", ".ts"}
+IMAGE_LIKE = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".heic", ".heif"}
 
 POLL_INTERVAL = 3
 IMAGE_WAIT = 90          # seconds to wait for Threads to fetch a picture
@@ -99,24 +113,66 @@ def fit(text, limit):
     return "".join(out).rstrip() + "…"
 
 
-def compose(post, skipped):
-    """The Threads text: post text, then the buttons as 'label: url' lines, and a
-    note with the original's link when something didn't fit or didn't go along."""
+SENTENCE_END = r"(?<=[.!?…])\s+"
+
+
+def split_text(text, limit=TEXT_LIMIT):
+    """Pieces of at most `limit` weight, cut at paragraph, line, sentence or word
+    boundaries (a hard cut only for text with no separators at all)."""
+    text = text.strip()
+    if text_weight(text) <= limit:
+        return [text] if text else []
+    for sep, pattern in (("\n\n", r"\n\s*\n"), ("\n", r"\n"), (" ", SENTENCE_END),
+                         (" ", r"\s+")):
+        units = [u for u in re.split(pattern, text) if u.strip()]
+        if len(units) > 1:
+            out, cur = [], ""
+            for unit in units:
+                for piece in split_text(unit, limit):
+                    candidate = f"{cur}{sep}{piece}" if cur else piece
+                    if text_weight(candidate) <= limit:
+                        cur = candidate
+                    else:
+                        out.append(cur)
+                        cur = piece
+            if cur:
+                out.append(cur)
+            return out
+    out, cur, used = [], [], 0
+    for ch in text:
+        w = weight(ch)
+        if used + w > limit:
+            out.append("".join(cur))
+            cur, used = [], 0
+        cur.append(ch)
+        used += w
+    if cur:
+        out.append("".join(cur))
+    return out
+
+
+def compose_parts(post, skipped):
+    """The Threads texts: a long post becomes a chain (the first post, then each
+    next piece as a reply to the previous). The buttons ('label: url' lines) and,
+    if some media had to be left out, a link to the original go at the very end."""
     text = html_to_plain(post.html).strip()
     buttons = "\n".join(f"{label}: {url}" for label, url in post.flat_buttons())
-    note = ""
-    full = "\n\n".join(p for p in (text, buttons) if p)
-    if skipped:
-        note = f"Медиа — в оригинале: {post.link}"
-    elif text_weight(full) > TEXT_LIMIT:
-        note = f"Полностью — в оригинале: {post.link}"
-
+    note = f"Медиа — в оригинале: {post.link}" if skipped else ""
     tail = "\n\n".join(p for p in (buttons, note) if p)
-    if text_weight(tail) > TEXT_LIMIT - 20:     # no room for the buttons themselves
-        tail = note
-    room = TEXT_LIMIT - text_weight(tail) - (2 if text and tail else 0)
-    head = fit(text, max(room, 0)) if text else ""
-    return "\n\n".join(p for p in (head, tail) if p)
+
+    parts = split_text(text, TEXT_LIMIT)
+    if tail:
+        if parts and text_weight(parts[-1] + "\n\n" + tail) <= TEXT_LIMIT:
+            parts[-1] += "\n\n" + tail
+        elif text_weight(tail) <= TEXT_LIMIT:
+            parts.append(tail)
+        else:           # too many buttons: keep the note, the links are in the original
+            parts.append(note or fit(tail, TEXT_LIMIT))
+    if len(parts) > MAX_PARTS:
+        closing = f"Полностью — в оригинале: {post.link}"
+        parts = parts[:MAX_PARTS]
+        parts[-1] = fit(parts[-1], TEXT_LIMIT - text_weight(closing) - 2) + "\n\n" + closing
+    return parts or [""]
 
 
 # --- media ------------------------------------------------------------------
@@ -367,13 +423,14 @@ class ThreadsTarget(Target):
                 raise MediaRejected(index, f"still {status} after the waiting time")
             await asyncio.sleep(POLL_INTERVAL)
 
-    async def _publish(self, token, text, hosted):
+    async def _publish(self, token, text, hosted, reply_to=None):
         """Create the container(s), wait for the media, publish; returns the post id."""
         def item_params(kind, url):
             return {"media_type": kind.upper(), f"{kind}_url": url}
 
         if not hosted:
-            container = await self._create(token, media_type="TEXT", text=text)
+            extra = {"reply_to_id": reply_to} if reply_to else {}
+            container = await self._create(token, media_type="TEXT", text=text, **extra)
         elif len(hosted) == 1:
             kind, url = hosted[0]
             container = await self._create(token, index=0, text=text, **item_params(kind, url))
@@ -390,17 +447,43 @@ class ThreadsTarget(Target):
                                 creation_id=container)
         return result["id"]
 
+    async def _prepare(self, path, temp):
+        """(kind, path-to-upload, reason): the file as Threads wants it, converted
+        with ffmpeg when needed (new files are added to `temp` for deletion)."""
+        if not media.available():
+            kind, reason = classify(path)
+            return kind, path, reason
+        ext = os.path.splitext(path)[1].lower()
+        try:
+            if ext in VIDEO_LIKE:
+                made, reason = await media.threads_video(path)
+                if made:
+                    temp.append(made)
+                return ("video" if made else None), made, reason
+            if ext in IMAGE_LIKE:
+                kind, made, derived, reason = await media.threads_image(path)
+                if derived:
+                    temp.append(made)
+                return kind, made, reason
+        except Exception as e:  # noqa: BLE001 - a broken file must not stop the post
+            return None, None, f"conversion failed: {e}"
+        return None, None, f"unsupported type {ext or '(none)'}"
+
     async def send(self, post: Post):
         token = await self.access_token()
-        items, skipped = [], 0
+        items, skipped, temp = [], 0, []
         for path in post.media:
-            kind, reason = classify(path)
-            if kind is None or len(items) >= CAROUSEL_MAX or self.uploader is None:
+            if len(items) >= CAROUSEL_MAX or self.uploader is None:
                 logger.warning("Threads skips %s: %s", os.path.basename(path),
-                               reason or "no upload folder / too many items")
+                               "no upload folder" if self.uploader is None else "too many items")
+                skipped += 1
+                continue
+            kind, use, reason = await self._prepare(path, temp)
+            if kind is None:
+                logger.warning("Threads skips %s: %s", os.path.basename(path), reason)
                 skipped += 1
             else:
-                items.append((kind, path))
+                items.append((kind, use))
 
         hosted, names = [], []
         try:
@@ -413,9 +496,11 @@ class ThreadsTarget(Target):
                     logger.exception("Uploading media for Threads failed")
                     skipped += len(items)
             while True:
-                text = compose(post, skipped)
+                parts = compose_parts(post, skipped)
+                if not parts[0] and not hosted:
+                    return
                 try:
-                    post_id = await self._publish(token, text, hosted)
+                    post_id = await self._publish(token, parts[0], hosted)
                     break
                 except MediaRejected as e:
                     logger.warning("Threads can't use a media item (%s), leaving it out", e)
@@ -430,11 +515,27 @@ class ThreadsTarget(Target):
         finally:
             if names:
                 await self.uploader.remove(names)
+            for path in temp:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+        first_id = post_id
+        for number, part in enumerate(parts[1:], start=2):
+            await asyncio.sleep(REPLY_PAUSE)
+            try:
+                post_id = await self._publish(token, part, [], reply_to=post_id)
+            except Exception as e:  # noqa: BLE001 - the post is out, say what is missing
+                logger.error("Threads continuation %s of %s failed (%s): the post %s "
+                             "is up without it", number, len(parts), e, first_id)
+                break
 
         link = ""
         try:
-            info = await self.api("GET", post_id, token, fields="permalink")
+            info = await self.api("GET", first_id, token, fields="permalink")
             link = f", {info['permalink']}" if info.get("permalink") else ""
         except Exception:  # noqa: BLE001 - the permalink is only for the log
             pass
-        logger.info("Threads post published: id %s, %s media%s", post_id, len(hosted), link)
+        logger.info("Threads post published: id %s, %s media, %s part(s)%s",
+                    first_id, len(hosted), len(parts), link)

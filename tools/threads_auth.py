@@ -3,7 +3,8 @@
 
 Before the first run:
   1. Create an app at https://developers.facebook.com, add the Threads API use
-     case with the permissions threads_basic and threads_content_publish.
+     case with the permissions threads_basic, threads_content_publish and
+     threads_manage_replies (the last one is what lets long posts continue as replies).
   2. In the app's settings add a valid OAuth redirect URI, e.g. https://localhost/
      (nothing has to answer there), and note the Threads app id and secret
      (Threads API settings -> "Threads app ID" / "Threads app secret").
@@ -32,7 +33,7 @@ from targets.threads import API_VERSION, GRAPH_URL, TokenStore  # noqa: E402
 
 load_dotenv()
 
-SCOPE = "threads_basic,threads_content_publish"
+SCOPE = "threads_basic,threads_content_publish,threads_manage_replies"
 
 
 def fail(what, resp):
