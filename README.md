@@ -34,6 +34,7 @@ APPID и APIHASH создаются здесь: https://core.telegram.org/api/ob
 | MAX (канал) | `MAX_TOKEN`, `MAX_CHAT_ID` | бот должен быть админом канала; `chat_id` можно узнать через `python3 tools/max_chat_id.py`; API MAX требует корневой сертификат Минцифры (системный или `MAX_CA_FILE`) |
 | ВК (стена сообщества) | `VK_TOKEN`, `VK_GROUP_ID`; для медиа ещё `VK_APP_ID` | пост публикует ключ сообщества (право «стена»); фото и видео загружаются пользовательским токеном администратора из VK ID — один раз `python3 tools/vk_user_auth.py` создаёт `vk_user_token.json` (секрет, бот сам обновляет токены — использовать только на одной машине). Без него медиа заменяются ссылкой на пост. Проверка возможностей ключей: `python3 tools/vk_check.py` |
 | Tumblr | `TUMBLR_CLIENT_ID`, `TUMBLR_CLIENT_SECRET`, `TUMBLR_BLOG` | OAuth2: один раз `python3 tools/tumblr_auth.py` создаёт `tumblr_token.json` (секрет, токены обновляются самим ботом — использовать файл только на одной машине); форматирование, до 30 картинок и 1 видео в посте, остальное — ссылкой на пост |
+| Threads | `THREADS_APP_ID`, `THREADS_MEDIA_SFTP`, `THREADS_MEDIA_KEY`, `THREADS_MEDIA_URL` | текст до 500 символов (длиннее — обрезка со ссылкой), до 20 картинок/видео галереей; Threads сам скачивает медиа по публичному адресу, поэтому бот временно кладёт файлы по SFTP в папку на `slona.me` и удаляет после публикации; токен получает `python3 tools/threads_auth.py` (60 дней, бот продлевает раз в неделю); проверка без публикации: `python3 tools/threads_check.py` |
 
 ## Деплой
 

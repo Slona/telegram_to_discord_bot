@@ -64,10 +64,11 @@ class Target:
 def load_targets():
     from .discord import DiscordTarget
     from .max import MaxTarget
+    from .threads import ThreadsTarget
     from .tumblr import TumblrTarget
     from .vk import VkTarget
 
-    candidates = [DiscordTarget, MaxTarget, VkTarget, TumblrTarget]
+    candidates = [DiscordTarget, MaxTarget, VkTarget, TumblrTarget, ThreadsTarget]
     targets = []
     for cls in candidates:
         try:
