@@ -74,6 +74,17 @@ class ThreadsError(Exception):
         self.body = body
 
 
+def is_account_level(error):
+    """True for refusals that concern the app/token/profile, not one piece of
+    content (e.g. 'API access blocked', code 200): retrying other content or
+    other ways of posting can't help and only hammers Meta."""
+    try:
+        err = json.loads(error.body).get("error", {})
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return err.get("type") == "OAuthException" or err.get("code") in (10, 190, 200)
+
+
 class MediaRejected(Exception):
     """Threads can't use one of the media items (carries its index)."""
 
@@ -307,6 +318,8 @@ class ThreadsTarget(Target):
         self.uploader = uploader
         self.tokens = None
         self._refresh_lock = asyncio.Lock()
+        self._blocked_until = 0.0
+        self._blocks = 0          # consecutive account-level refusals
 
     @classmethod
     def from_env(cls):
@@ -405,10 +418,21 @@ class ThreadsTarget(Target):
         try:
             result = await self.api("POST", f"{self.tokens['user_id']}/threads", token, **params)
         except ThreadsError as e:
-            if index is not None:
+            if index is not None and not is_account_level(e):
                 raise MediaRejected(index, str(e))
             raise
         return result["id"]
+
+    def _block(self, error):
+        """Meta refuses the app itself: pause posting (longer each time) instead of
+        trying every post in several ways."""
+        self._blocks += 1
+        minutes = min(30 * 2 ** (self._blocks - 1), 360)
+        self._blocked_until = time.time() + minutes * 60
+        logger.error("Threads refuses this app/token (%s). Posts to Threads are paused for "
+                     "%s min and are not retried. Check the app dashboard (alerts, "
+                     "restrictions, roles) and the profile; tools/threads_check.py shows "
+                     "which call fails.", error, minutes)
 
     async def _wait(self, token, container, kind, index):
         deadline = time.monotonic() + (VIDEO_WAIT if kind == "video" else IMAGE_WAIT)
@@ -470,6 +494,9 @@ class ThreadsTarget(Target):
         return None, None, f"unsupported type {ext or '(none)'}"
 
     async def send(self, post: Post):
+        if time.time() < self._blocked_until:
+            logger.warning("Threads is paused after a refusal from Meta: skipping %s", post.link)
+            return
         token = await self.access_token()
         items, skipped, temp = [], 0, []
         for path in post.media:
@@ -507,6 +534,9 @@ class ThreadsTarget(Target):
                     del hosted[e.index]
                     skipped += 1
                 except ThreadsError as e:
+                    if is_account_level(e):
+                        self._block(e)
+                        raise
                     if not hosted:
                         raise
                     logger.warning("Threads refused the media post (%s), posting text and a link", e)
@@ -521,6 +551,7 @@ class ThreadsTarget(Target):
                 except OSError:
                     pass
 
+        self._blocks = 0
         first_id = post_id
         for number, part in enumerate(parts[1:], start=2):
             await asyncio.sleep(REPLY_PAUSE)
