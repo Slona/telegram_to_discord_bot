@@ -49,6 +49,7 @@ TEXT_LIMIT = 500
 CAROUSEL_MAX = 20
 MAX_PARTS = 10            # a long post: the post and up to 9 replies
 REPLY_PAUSE = 2           # seconds between a post and its continuation
+MEDIA_RETRY_DELAYS = (5, 15, 30)   # Threads sometimes refuses a fetchable URL: try again
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
 IMAGE_MAX_BYTES = 8 * 1024 * 1024
@@ -69,9 +70,22 @@ KEEPALIVE_AFTER = 7 * 24 * 3600    # long-lived tokens (60 days): renew weekly
 
 class ThreadsError(Exception):
     def __init__(self, status, body):
-        super().__init__(f"Threads API error {status}: {body}")
         self.status = status
         self.body = body
+        super().__init__(self._describe(status, body))
+
+    @staticmethod
+    def _describe(status, body):
+        """Meta's JSON error as a readable line (its Russian text arrives \\u-escaped)."""
+        try:
+            err = json.loads(body)["error"]
+        except (ValueError, KeyError, TypeError):
+            return f"Threads API error {status}: {body}"
+        codes = f"{err.get('code')}/{err.get('error_subcode')}" if err.get("error_subcode") \
+            else str(err.get("code"))
+        detail = err.get("error_user_msg") or err.get("error_user_title") or ""
+        return (f"Threads API error {status}: {err.get('message')} (code {codes})"
+                + (f": {detail}" if detail else ""))
 
 
 def is_account_level(error):
@@ -82,7 +96,9 @@ def is_account_level(error):
         err = json.loads(error.body).get("error", {})
     except (ValueError, AttributeError, TypeError):
         return False
-    return err.get("type") == "OAuthException" or err.get("code") in (10, 190, 200)
+    # Not "any OAuthException": Meta also answers a media it couldn't fetch with that
+    # type (code 1, subcode 2207052), which says nothing about the app.
+    return err.get("code") in (10, 190, 200)
 
 
 class MediaRejected(Exception):
@@ -512,7 +528,7 @@ class ThreadsTarget(Target):
             else:
                 items.append((kind, use))
 
-        hosted, names = [], []
+        hosted, names, rejections = [], [], {}
         try:
             if items:
                 try:
@@ -530,6 +546,15 @@ class ThreadsTarget(Target):
                     post_id = await self._publish(token, parts[0], hosted)
                     break
                 except MediaRejected as e:
+                    url = hosted[e.index][1]
+                    tries = rejections.get(url, 0)
+                    if tries < len(MEDIA_RETRY_DELAYS):
+                        rejections[url] = tries + 1
+                        delay = MEDIA_RETRY_DELAYS[tries]
+                        logger.warning("Threads refused a media item (%s), trying again in %ss "
+                                       "(%s of %s)", e, delay, tries + 1, len(MEDIA_RETRY_DELAYS))
+                        await asyncio.sleep(delay)
+                        continue
                     logger.warning("Threads can't use a media item (%s), leaving it out", e)
                     del hosted[e.index]
                     skipped += 1
