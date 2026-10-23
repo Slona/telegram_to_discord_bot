@@ -50,6 +50,7 @@ CAROUSEL_MAX = 20
 MAX_PARTS = 10            # a long post: the post and up to 9 replies
 REPLY_PAUSE = 2           # seconds between a post and its continuation
 MEDIA_RETRY_DELAYS = (5, 15, 30)   # Threads sometimes refuses a fetchable URL: try again
+NOT_FOUND_RETRY_DELAYS = (2, 4, 8, 15)   # a fresh container may not be visible yet
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
 IMAGE_MAX_BYTES = 8 * 1024 * 1024
@@ -99,6 +100,16 @@ def is_account_level(error):
     # Not "any OAuthException": Meta also answers a media it couldn't fetch with that
     # type (code 1, subcode 2207052), which says nothing about the app.
     return err.get("code") in (10, 190, 200)
+
+
+def is_not_found(error):
+    """'The requested resource does not exist' (code 24): Meta answers that for a
+    container it created a moment ago but whose record hasn't spread yet."""
+    try:
+        err = json.loads(error.body).get("error", {})
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return err.get("code") == 24 or err.get("error_subcode") == 4279009
 
 
 class MediaRejected(Exception):
@@ -430,9 +441,21 @@ class ThreadsTarget(Target):
 
     # --- publishing -----------------------------------------------------------
 
+    async def _api_settled(self, method, path, token, **params):
+        """api(), asking again while Meta says a just-created container doesn't exist."""
+        for delay in (*NOT_FOUND_RETRY_DELAYS, None):
+            try:
+                return await self.api(method, path, token, **params)
+            except ThreadsError as e:
+                if delay is None or not is_not_found(e):
+                    raise
+                logger.info("Threads doesn't see the new container yet, asking again in %ss", delay)
+                await asyncio.sleep(delay)
+
     async def _create(self, token, index=None, **params):
         try:
-            result = await self.api("POST", f"{self.tokens['user_id']}/threads", token, **params)
+            result = await self._api_settled("POST", f"{self.tokens['user_id']}/threads",
+                                             token, **params)
         except ThreadsError as e:
             if index is not None and not is_account_level(e):
                 raise MediaRejected(index, str(e))
@@ -451,16 +474,24 @@ class ThreadsTarget(Target):
                      "which call fails.", error, minutes)
 
     async def _wait(self, token, container, kind, index):
+        """Wait for a container to be FINISHED. A failing media item raises
+        MediaRejected(index); with index None (the whole post) a ThreadsError."""
+        def fail(reason):
+            if index is None:
+                raise ThreadsError(0, reason)
+            raise MediaRejected(index, reason)
+
         deadline = time.monotonic() + (VIDEO_WAIT if kind == "video" else IMAGE_WAIT)
         while True:
-            info = await self.api("GET", container, token, fields="status,error_message")
+            info = await self._api_settled("GET", container, token,
+                                           fields="status,error_message")
             status = info.get("status")
             if status in ("FINISHED", "PUBLISHED"):
                 return
             if status in ("ERROR", "EXPIRED"):
-                raise MediaRejected(index, f"{status}: {info.get('error_message', '')}")
+                fail(f"{status}: {info.get('error_message', '')}")
             if time.monotonic() > deadline:
-                raise MediaRejected(index, f"still {status} after the waiting time")
+                fail(f"still {status} after the waiting time")
             await asyncio.sleep(POLL_INTERVAL)
 
     async def _publish(self, token, text, hosted, reply_to=None):
@@ -483,8 +514,11 @@ class ThreadsTarget(Target):
                 await self._wait(token, child, kind, i)
             container = await self._create(token, media_type="CAROUSEL",
                                            children=",".join(children), text=text)
-        result = await self.api("POST", f"{self.tokens['user_id']}/threads_publish", token,
-                                creation_id=container)
+            # the finished carousel, like the single items, is waited for before publishing
+            await self._wait(token, container,
+                             "video" if any(k == "video" for k, _ in hosted) else "image", None)
+        result = await self._api_settled("POST", f"{self.tokens['user_id']}/threads_publish",
+                                         token, creation_id=container)
         return result["id"]
 
     async def _prepare(self, path, temp):
