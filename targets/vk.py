@@ -37,7 +37,7 @@ from html.parser import HTMLParser
 
 import aiohttp
 
-from . import KEEPALIVE_AFTER, Post, Target, keepalive_loop
+from . import KEEPALIVE_AFTER, Post, Target, keepalive_loop, with_poll_text
 
 logger = logging.getLogger("tg_relay.vk")
 
@@ -411,6 +411,7 @@ class VkTarget(Target):
         raise error
 
     async def send(self, post: Post):
+        post = with_poll_text(post)     # polls.create needs a user token with the wall right
         text = html_to_plain(post.html).strip()
         truncated = len(text) > TEXT_LIMIT
         if truncated:

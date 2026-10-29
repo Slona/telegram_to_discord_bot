@@ -7,17 +7,40 @@ import uuid
 import telethon
 from telethon.extensions import html as tg_html
 
-from targets import Post
+from targets import Poll, Post
 
 logger = logging.getLogger("tg_relay")
 
 
 def is_relayable_media(message):
     # Link previews come through as media but are just the preview of a URL
-    # that is already in the message text, so they are not worth mirroring.
+    # that is already in the message text, so they are not worth mirroring; a poll
+    # is carried as a Poll, not as a file.
     return message.media is not None and not isinstance(
-        message.media, telethon.tl.types.MessageMediaWebPage
+        message.media, (telethon.tl.types.MessageMediaWebPage, telethon.tl.types.MessageMediaPoll)
     )
+
+
+def _plain(value):
+    """Telegram's newer layers wrap poll texts in TextWithEntities."""
+    return str(getattr(value, "text", value) or "")
+
+
+def extract_poll(messages):
+    """The poll of a post as a Poll, or None."""
+    for message in messages:
+        media = getattr(message, "media", None)
+        if isinstance(media, telethon.tl.types.MessageMediaPoll):
+            poll = media.poll
+            return Poll(
+                question=_plain(poll.question),
+                options=[_plain(a.text) for a in poll.answers],
+                multiple=bool(getattr(poll, "multiple_choice", False)),
+                quiz=bool(getattr(poll, "quiz", False)),
+                closed=bool(getattr(poll, "closed", False)),
+                close_date=getattr(poll, "close_date", None),
+            )
+    return None
 
 
 def telegram_link(chat, message):
@@ -98,11 +121,15 @@ async def relay(messages, chat, targets, dlloc):
         if buttons:
             logger.info("Post %s has %s URL button(s)", messages[0].id,
                         sum(len(row) for row in buttons))
-        if not text and not paths and not buttons:
+        poll = extract_poll(messages)
+        if poll:
+            logger.info("Post %s has a poll with %s option(s)", messages[0].id, len(poll.options))
+        if not text and not paths and not buttons and not poll:
             return
 
         post = Post(source=chat.title, text=text, html=html, plain=plain,
-                    link=telegram_link(chat, messages[0]), media=paths, buttons=buttons)
+                    link=telegram_link(chat, messages[0]), media=paths, buttons=buttons,
+                    poll=poll)
         results = await asyncio.gather(
             *(t.send(post) for t in targets), return_exceptions=True
         )

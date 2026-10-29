@@ -1,6 +1,8 @@
 """Relay targets. Each target is enabled only when its env vars are set."""
 
 import asyncio
+import dataclasses
+import html as html_lib
 import logging
 from dataclasses import dataclass, field
 
@@ -31,6 +33,17 @@ async def keepalive_loop(name, step):
 
 
 @dataclass
+class Poll:
+    """A Telegram poll: only what other platforms can show (votes stay in Telegram)."""
+    question: str
+    options: list[str]
+    multiple: bool = False     # several answers allowed
+    quiz: bool = False         # has a right answer (Telegram doesn't reveal it to us)
+    closed: bool = False
+    close_date: object = None  # datetime when voting ends, if set
+
+
+@dataclass
 class Post:
     """A Telegram post in a platform-neutral form."""
     source: str                # channel title
@@ -41,9 +54,35 @@ class Post:
     media: list[str] = field(default_factory=list)  # local file paths
     # URL buttons under the Telegram post, as rows of (label, url)
     buttons: list[list[tuple[str, str]]] = field(default_factory=list)
+    poll: "Poll | None" = None
 
     def flat_buttons(self):
         return [button for row in self.buttons for button in row]
+
+
+def poll_plain(post):
+    """The poll as plain text, ending with where to vote (only Telegram has the votes)."""
+    poll = post.poll
+    lines = [f"📊 {'Викторина' if poll.quiz else 'Опрос'}: {poll.question}"]
+    lines += [f"• {option}" for option in poll.options]
+    if poll.multiple:
+        lines.append("(можно выбрать несколько вариантов)")
+    lines.append("Опрос завершён. Результаты — в оригинале: " if poll.closed
+                 else "Голосовать — в оригинале: ")
+    lines[-1] += post.link
+    return "\n".join(lines)
+
+
+def with_poll_text(post):
+    """A copy of the post with its poll turned into text (and no poll), for
+    platforms that can't carry a poll of their own."""
+    if post.poll is None:
+        return post
+    block = poll_plain(post)
+    join = lambda old, new: f"{old}\n\n{new}" if old else new
+    return dataclasses.replace(
+        post, poll=None, text=join(post.text, block), plain=join(post.plain, block),
+        html=join(post.html, html_lib.escape(block, quote=False)))
 
 
 class Target:

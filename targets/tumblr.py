@@ -26,7 +26,7 @@ from html.parser import HTMLParser
 
 import requests
 
-from . import KEEPALIVE_AFTER, Post, Target, keepalive_loop
+from . import KEEPALIVE_AFTER, Post, Target, keepalive_loop, with_poll_text
 
 logger = logging.getLogger("tg_relay.tumblr")
 
@@ -280,6 +280,7 @@ class TumblrTarget(Target):
         await asyncio.to_thread(self._post_sync, token, content, files)
 
     async def send(self, post: Post):
+        post = with_poll_text(post)     # NPF has no poll block
         images, videos, skipped = [], [], 0
         for path in post.media:
             ext = os.path.splitext(path)[1].lower()

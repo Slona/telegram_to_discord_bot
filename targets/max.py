@@ -18,7 +18,7 @@ import textwrap
 
 import aiohttp
 
-from . import Post, Target
+from . import Post, Target, with_poll_text
 
 logger = logging.getLogger("tg_relay.max")
 
@@ -186,6 +186,7 @@ class MaxTarget(Target):
             await asyncio.sleep(SEND_INTERVAL)
 
     async def send(self, post: Post):
+        post = with_poll_text(post)     # MAX has no poll attachment
         attachments, unsupported = [], 0
         for path in post.media:
             kind = classify(path)

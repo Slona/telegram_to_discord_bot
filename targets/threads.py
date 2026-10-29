@@ -37,7 +37,7 @@ import unicodedata
 import requests
 
 import media
-from . import Post, Target, keepalive_loop
+from . import Post, Target, keepalive_loop, with_poll_text
 from .vk import html_to_plain
 
 logger = logging.getLogger("tg_relay.threads")
@@ -543,11 +543,39 @@ class ThreadsTarget(Target):
             return None, None, f"conversion failed: {e}"
         return None, None, f"unsupported type {ext or '(none)'}"
 
+    @staticmethod
+    def _poll_fits(poll):
+        """Threads polls: 2-4 options of 1-25 characters, a question as the post text."""
+        return (poll is not None and 2 <= len(poll.options) <= 4
+                and all(1 <= len(o) <= 25 for o in poll.options)
+                and 1 <= text_weight(poll.question) <= TEXT_LIMIT)
+
+    async def _publish_poll(self, token, poll):
+        letters = "abcd"
+        attachment = {f"option_{letters[i]}": o for i, o in enumerate(poll.options)}
+        container = await self._create(token, media_type="TEXT", text=poll.question,
+                                       poll_attachment=json.dumps(attachment, ensure_ascii=False))
+        result = await self._api_settled("POST", f"{self.tokens['user_id']}/threads_publish",
+                                         token, creation_id=container)
+        return result["id"]
+
     async def send(self, post: Post):
         if time.time() < self._blocked_until:
             logger.warning("Threads is paused after a refusal from Meta: skipping %s", post.link)
             return
         token = await self.access_token()
+        if self._poll_fits(post.poll):
+            try:
+                post_id = await self._publish_poll(token, post.poll)
+                self._blocks = 0
+                logger.info("Threads poll published: id %s, %s options", post_id, len(post.poll.options))
+                return
+            except ThreadsError as e:
+                if is_account_level(e):
+                    self._block(e)
+                    raise
+                logger.warning("Threads refused the poll (%s), posting it as text", e)
+        post = with_poll_text(post)
         items, skipped, temp = [], 0, []
         for path in post.media:
             if len(items) >= CAROUSEL_MAX or self.uploader is None:
