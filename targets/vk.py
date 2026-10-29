@@ -311,7 +311,11 @@ class VkTarget(Target):
         form.add_field("photo", data, filename=os.path.basename(path),
                        content_type=content_type)
         async with self.session.post(url, data=form, ssl=self.ssl_context) as resp:
-            uploaded = await resp.json(content_type=None)
+            status, text = resp.status, await resp.text()
+        try:
+            uploaded = json.loads(text)
+        except ValueError:      # an error page or an empty body from VK's upload server
+            uploaded = {"error": f"HTTP {status}, not JSON: {text[:150]!r}"}
         return uploaded, len(data), content_type
 
     @staticmethod
@@ -339,8 +343,11 @@ class VkTarget(Target):
             attempt += 1
             server = await self.call("photos.getWallUploadServer", _token=token,
                                      group_id=self.group_id)
-            uploaded, size, content_type = await self._upload_image(
-                server["upload_url"], path)
+            try:
+                uploaded, size, content_type = await self._upload_image(
+                    server["upload_url"], path)
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                uploaded, size, content_type = {"error": f"{type(e).__name__}: {e}"}, 0, "?"
             if uploaded.get("photo") not in (None, "", "[]"):
                 if attempt > 1:
                     logger.info("VK took %s on try %s", os.path.basename(path), attempt)
