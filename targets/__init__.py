@@ -4,6 +4,7 @@ import asyncio
 import dataclasses
 import html as html_lib
 import logging
+import os
 from dataclasses import dataclass, field
 
 logger = logging.getLogger("tg_relay")
@@ -60,15 +61,25 @@ class Post:
         return [button for row in self.buttons for button in row]
 
 
+def poll_mode():
+    """POLL_MODE: 'link' (default) - the question and a link to vote in Telegram;
+    'list' - the same with the options listed; 'native' - a real poll where the
+    platform has one (Threads, Discord), 'list' text elsewhere. Votes are never
+    synced, so with 'native' each platform counts its own."""
+    mode = os.environ.get("POLL_MODE", "link").strip().lower()
+    return mode if mode in ("link", "list", "native") else "link"
+
+
 def poll_plain(post):
     """The poll as plain text, ending with where to vote (only Telegram has the votes)."""
     poll = post.poll
     lines = [f"📊 {'Викторина' if poll.quiz else 'Опрос'}: {poll.question}"]
-    lines += [f"• {option}" for option in poll.options]
-    if poll.multiple:
-        lines.append("(можно выбрать несколько вариантов)")
-    lines.append("Опрос завершён. Результаты — в оригинале: " if poll.closed
-                 else "Голосовать — в оригинале: ")
+    if poll_mode() != "link":
+        lines += [f"• {option}" for option in poll.options]
+        if poll.multiple:
+            lines.append("(можно выбрать несколько вариантов)")
+    lines.append("Опрос завершён, итоги в Telegram: " if poll.closed
+                 else "Голосовать в Telegram: ")
     lines[-1] += post.link
     return "\n".join(lines)
 

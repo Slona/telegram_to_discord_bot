@@ -37,7 +37,7 @@ import unicodedata
 import requests
 
 import media
-from . import Post, Target, keepalive_loop, with_poll_text
+from . import Post, Target, keepalive_loop, poll_mode, with_poll_text
 from .vk import html_to_plain
 
 logger = logging.getLogger("tg_relay.threads")
@@ -564,7 +564,7 @@ class ThreadsTarget(Target):
             logger.warning("Threads is paused after a refusal from Meta: skipping %s", post.link)
             return
         token = await self.access_token()
-        if self._poll_fits(post.poll):
+        if poll_mode() == "native" and self._poll_fits(post.poll):
             try:
                 post_id = await self._publish_poll(token, post.poll)
                 self._blocks = 0

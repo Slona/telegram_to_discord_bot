@@ -5,7 +5,7 @@ import time
 
 import nextcord
 
-from . import Post, Target, with_poll_text
+from . import Post, Target, poll_mode, with_poll_text
 
 logger = logging.getLogger("tg_relay.discord")
 
@@ -72,7 +72,7 @@ class DiscordTarget(Target):
 
     async def send(self, post: Post):
         if post.poll is not None:
-            if await self.send_poll(post):
+            if poll_mode() == "native" and await self.send_poll(post):
                 logger.info("Sent a poll")
                 return
             post = with_poll_text(post)
